@@ -41,15 +41,30 @@ This program is based on Campbell Barton's sphinx_doc_gen.py script
 #            the Brian update. I added the "pass" statement generation there.
 
 #2016-June: modifications by Robert Forsman for use with pycharm
+#2022-08-29: Updates by Mysteryem:
+#            * Add --factory-startup to help message's example usage so that classes/attributes/etc. from addons are not
+#              included by default
+#            * Recursive submodule inclusion
+#            * Output modules with submodules into __init__.py in a directory with the module's name
+#            * Output submodules into module's directory unless specified in EXCLUDE_MODULES
+#            * Format array property types according to their dimensions
+#            * Add 'self' and 'cls' arguments to RNA functions
+#            * Insert '*' into RNA function arguments when arguments without defaults come after arguments with defaults
+#            * Updated inspect.getargspec to inspect.getfullargspec to fix errors with some functions
+#            * add a no-op (pass) to classes that have no printable functions
+#            * Support MemberDescriptorType and BuiltInFunction/MethodType in pyclass2predef
+#            * More supported types for pymodule2predef (notably BMesh operators)
 script_help_msg = '''
 Usage:
 - Run this script from blenders root path:
 
-    .\blender.exe -b -P doc\python_api\pypredef_gen.py
+    .\blender.exe -b --factory-startup -P doc\python_api\pypredef_gen.py
 
   This will generate PyDev python predefiniton files (for Eclipse) in doc\python_api\pypredef\,
   assuming that .\blender.exe is the blender executable, and you have placed this script in
   .\doc\python_api\ Blender's subdirectory.
+  Remove --factory_startup if you want to include operators/properties/classes/etc. registered by addons.
+  Remove -b if you want to include the full bgl module and/or some of the graphics dependent modules/etc. 
 '''
 
 '''
@@ -77,23 +92,63 @@ import sys
 # select modules to build:
 INCLUDE_MODULES = (
     "bpy",
-    "bpy.app",
-    "bpy.path",
-    "bpy.props",
-    "bpy.utils",
+    "bpy_extras",
     "bmesh",
-    "bmesh.types",
-    "bge",
     "aud",
     "bgl",
+    "bl_math",
     "blf",
     "mathutils",
-    "mathutils.geometry"
+    "gpu",
+    "gpu_extras",
+    "imbuf",
+    "freestyle",
+    "rna_info",
 )
 
+# Modules to exclude, each module's .__name__ is checked against this set
+EXCLUDE_MODULES = {
+    "dummy_module_for_formatting_purposes",
+}
+
+# Non-module attributes to treat as if they are modules
+ATTRIBUTES_AS_SUBMODULES = {
+    "bpy": {
+        "app",
+        # The current context instance tends to have many more attributes than bpy.types.Context, creating a fake module
+        # from the current instance will produce predefenitions for many extra attributes
+        "context",
+    },
+    "bpy.app": {
+        # Script doesn't handle non-RNA classes within modules very well at the moment, so force all of these to be
+        # treated as submodules
+        "handlers",
+        "timers",
+        "translations",
+        "icons",
+        "alembic",
+        "build_options",
+        "ffmpeg",
+        "ocio",
+        "oiio",
+        "opensubdiv",
+        "openvb",
+        "sdl",
+        "usd",
+    }
+}
+
+# Modules/submodules that will include all attributes, initialised to None if the type can't be represented
+DOCUMENT_ALL_ATTRIBUTES_MODULES = {
+    "bpy",
+    "bpy.context",
+}
+
+# TODO: bpy_prop_collection and bpy_prop_array should be faked too
 _BPY_STRUCT_FAKE = "bpy_struct"
 _BPY_FULL_REBUILD = False
 _IDENT = "   "
+_SPECIAL_HANDLING_MODULES = {"bpy.ops", "bpy.types"}
 
 #dictionary, used to correct some type descriptions:
 TYPE_ABERRATIONS = {
@@ -120,39 +175,57 @@ TYPE_ABERRATIONS = {
         "list of strigs":"[str]",
         "list of strings":"[str]",
         "FCurve or list if index is -1 with an array property":"FCurve",
-        "list of key, value tuples": ("[(str, types.%s)]" % _BPY_STRUCT_FAKE)
+        "list of key, value tuples": ("[(str, types.%s)]" % _BPY_STRUCT_FAKE),
+        "Undefined (it may change).": "None  # Undefined (it may change)",
+        "Matrix Access": "mathutils.MatrixAccess",  # MatrixAccess type is not exposed in the Python API
+        "(Vector, float) pair": "(mathutils.Vector, float)",
+        "Vector of size 3": "mathutils.Vector  # Size of 3",
+        "(Quaternion, float) pair": "(mathutils.Quaternion, float)",
+        "Vector or float when 2D vectors are used": "Union[mathutils.Vector, float]  # float when 2D vectors are used",
+        "list of tuples": "[tuple]",
+        "list of ints": "[int]",
+        "list of floats": "[float]",
+        "BMElemSeq of BMFace": "BMElemSeq  # of BMFace",
+        "BMElemSeq of BMLoop": "BMElemSeq  # of BMLoop",
+        "BMElemSeq of BMVert": "BMElemSeq  # of BMVert",
+        "BMElemSeq of BMEdge": "BMElemSeq  # of BMEdge",
+        "list of BMLoop tuples": "[(BMLoop, BMLoop, BMLoop)]",
+        "(bmesh.types.BMFace, bmesh.types.BMLoop) pair": "(bmesh.types.BMFace, bmesh.types.BMLoop)",
+        "tuple of (bmesh.types.BMFace)": "tuple[(bmesh.types.BMFace), ...]",
+        "tuple of bmesh.types.BMVert": "tuple[bmesh.types.BMVert, ...]",
+        "tuple of strings": "tuple[str, ...]",
+        "tuple pair of functions": "(typing.Callable, typing.Callable)",
+        "Interface0D or one of its subclasses.": "Interface0D",
+        "List of FEdge objects": "[FEdge]",
+        "List of SVertex objects": "[SVertex]",
+        "list of mathutils.Vector objects": "[mathutils.Vector]",
+        "List of ViewEdge objects": "[ViewEdge]",
+        "str, or None if the ViewShape is not part of a library": "str  # None if the ViewShape is not part of a library ",
+        "List of ViewVertex objects": "[ViewVertex]",
+        "pair of floats": "(float, float)",
+        "pair of ints": "(int, int)",
+        "(list of mathutils.Vector, list of (int, int), list of list of int, list of list of int, list of list of int, list of list of int)":
+            "([mathutils.Vector], [(int, int)], [[int]], [[int]], [[int]], [[int]])",
+        "A tuple pair containing mathutils.Vector or None": "Union[(mathutils.Vector, mathutils.Vector), None]",
+        "tuple pair of mathutils.Vector or None if the intersection can't be calculated":
+            "Union[(mathutils.Vector, mathutils.Vector), None]  # None if the intersection can't be calculated",
+        "tuple of mathutils.Vector's or None when there is no intersection":
+            "Union[(mathutils.Vector, mathutils.Vector), None]  # None when there is no intersection",
+        "pair of lists": "(list, list)",
+        "list of four floats, list of four mathutils.Vector types": "[float], [mathutils.Vector]  # Four elements in each list",
 }
 
 import os
 import sys
 import inspect
 import types
+import importlib
 import bpy
 import rna_info
+import bmesh
 
-#---- learning types "by example"
-# lame, the standard types modelule does not contains many type classes
-# so we have to define it "by example":
-class _example:
-    @property
-    def a_property(self):
-        return None
-
-    @classmethod
-    def a_classmethod(cls):
-        return None
-
-    @staticmethod
-    def a_staticmethod():
-        return None
-
-PropertyType = type(_example.a_property)
-ClassMethodType = type(_example.__dict__["a_classmethod"])
-StaticMethodType = type(_example.__dict__["a_staticmethod"])
-ClassMethodDescriptorType = type(dict.__dict__['fromkeys'])
-MethodDescriptorType = type(dict.get)
-GetSetDescriptorType = type(int.real)
-#---- end "learning by example"
+# BMeshOpFunc type is not exposed directly by the current Blender API
+BMeshOpFuncType = type(bmesh.ops.split)
 
 def write_indented_lines(ident, fn, text, strip=True):
     ''' Helper function. Apply same indentation to all lines in a multilines text.
@@ -363,17 +436,27 @@ def rna2list(info):
                          "ord": oridinal number
 
     '''
-    def type_name(name, include_namespace=False):
+    def type_name(name, include_namespace=False, array_dimensions=None):
         ''' Helper function, that corrects some wrong type names
             Arguments:
             @name (string): "raw" name, received from RNA
             @include_namespace: True, when append the bpy.types. prefix
+            @array_dimensions: int bpy_prop_array specifying dimensions when the type is an array type
             returns the corrected type name (string)
         '''
         if name in TYPE_ABERRATIONS:
             name = TYPE_ABERRATIONS[name]
         if include_namespace:
-            name = "types." + name
+            name = "bpy.types." + name
+        if array_dimensions is not None:
+            at_least_one_dimension_specified = False
+            for dim_length in reversed(array_dimensions):
+                if dim_length != 0:
+                    name = "[" + ", ".join([name] * dim_length) + "]"
+                    at_least_one_dimension_specified = True
+            if not at_least_one_dimension_specified:
+                # All 0 usually means it is variable, e.g. Image.pixels
+                name = "[" + name + "]"
         return name
 
     def get_argitem(arg, prev_ord, is_return=False):
@@ -434,19 +517,24 @@ def rna2list(info):
     if type(info) == rna_info.InfoStructRNA:
         #base class of this struct:
         base_id = getattr(info.base,"identifier",_BPY_STRUCT_FAKE)
-        prototype = "class {0}(types.{1}):".format(info.identifier, base_id)
+        prototype = "class {0}({1}):".format(info.identifier, base_id)
         definition["@def"].setdefault("prototype",prototype)
         definition["@def"]["description"] = info.description
         definition["@def"].setdefault("hint","class")
 
     elif type(info) == rna_info.InfoPropertyRNA:
+        array_dimensions = None
         if info.collection_type:
             prop_type = info.collection_type.identifier
         elif info.fixed_type:
             prop_type = info.fixed_type.identifier
         else:
             prop_type = info.type
-        prototype = "{0} = {1}".format(info.identifier, type_name(prop_type, info.fixed_type != None))
+            bl_prop = info.bl_prop
+            if bl_prop and hasattr(bl_prop, 'is_array'):
+                if bl_prop.is_array:
+                    array_dimensions = bl_prop.array_dimensions
+        prototype = "{0} = {1}".format(info.identifier, type_name(prop_type, info.fixed_type != None, array_dimensions))
         if info.is_readonly:
             prototype = prototype + " # (read only)"
 
@@ -459,10 +547,37 @@ def rna2list(info):
         definition.setdefault("@returns",{"name" : "returns", "description" : info.get_type_description(as_ret = True), "ord" : 1})
 
     elif type(info) == rna_info.InfoFunctionRNA:
-        args_str = ", ".join(prop.get_arg_default(force=False) for prop in info.args)
+        # Add the classmethod decorator and append 'cls' to the argument for classmethod and append 'self' to the
+        # arguments of functions that use it
+        if info.is_classmethod:
+            definition["@def"].setdefault("decorator", "@classmethod\n")
+            arg_strings = ['cls']
+        elif info.bl_func.use_self:
+            arg_strings = ['self']
+        else:
+            arg_strings = []
+
+        # Append each argument with its default value if it exists
+        # As we go through the arguments, if we find a required argument (no default value) after a not required
+        # argument (has a default value), append '*' before the required argument for the first occurrence of such
+        first_not_required = None
+        first_required_after_not_required = None
+        for i, prop in enumerate(info.args):
+            if first_not_required is None:
+                if not prop.is_required:
+                    first_not_required = i
+            elif first_required_after_not_required is None:
+                if prop.is_required:
+                    first_required_after_not_required = i
+                    # The next argument to append doesn't have a default value, but it comes after arguments that do so
+                    # '*' must be appended beforehand to signify that all arguments without default values after this
+                    # point are required to be specified by name
+                    arg_strings.append('*')
+            # Append the next argument with its default value if it exists
+            arg_strings.append(prop.get_arg_default(force=False))
+        args_str = ", ".join(arg_strings)
         prototype = "{0}({1})".format(info.identifier, args_str)
         definition["@def"].setdefault("prototype",prototype)
-        if info.is_classmethod: definition["@def"].setdefault("decorator","@classmethod\n")
         definition["@def"]["description"] = info.description
         #append arguments:
         for arg in info.args:
@@ -625,7 +740,7 @@ def pyfunc2predef(ident, fw, identifier, py_func, is_class=True):
         @is_class (boolean): True, when it is a class member
     '''
     try:
-        arguments = inspect.getargspec(py_func)
+        arguments = inspect.getfullargspec(py_func)
         if len(arguments.args) == 0 and is_class:
             fw(ident+"@staticmethod\n")
         elif len(arguments.args)==0: #global function (is_class = false)
@@ -653,9 +768,11 @@ def pyfunc2predef(ident, fw, identifier, py_func, is_class=True):
             write_indented_lines(ident+_IDENT,fw,"pass",False)
 
         fw(ident + "\n")
-    except:
-        msg = "#unable to describe the '%s' method due to internal error\n\n" % identifier
-        fw(ident + msg)
+    except Exception as ex:
+        msg = "#unable to describe the '%s' method due to internal error" % identifier
+        print(msg + ":")
+        print(ex)
+        fw(ident + msg + "\n\n")
 
 def py_descr2predef(ident, fw, descr, module_name, type_name, identifier):
     ''' Creates declaration of a function or class method
@@ -683,7 +800,7 @@ def py_descr2predef(ident, fw, descr, module_name, type_name, identifier):
         if "docstring" in definition:
             write_indented_lines(ident,fw,definition["docstring"],False)
 
-    elif type(descr) in (MethodDescriptorType, ClassMethodDescriptorType):
+    elif type(descr) in (types.MethodDescriptorType, types.ClassMethodDescriptorType):
         py_c_func2predef(ident,fw,module_name,type_name,identifier,descr,True)
     else:
         raise TypeError("type was not MemberDescriptiorType, GetSetDescriptorType, MethodDescriptorType or ClassMethodDescriptorType")
@@ -700,7 +817,7 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
         @is_class (boolean): True, when it is a class member
     '''
     definition = doc2definition(py_func.__doc__) #parse the eventual RST sphinx markup
-    if type(py_func)== ClassMethodDescriptorType:
+    if type(py_func)== types.ClassMethodDescriptorType:
         fw(ident+"@classmethod\n")
 
     if "declaration" in definition:
@@ -758,31 +875,137 @@ def pyclass2predef(fw, module_name, type_name, value):
 
     descr_items = [(key, descr) for key, descr in sorted(value.__dict__.items()) if not key.startswith("__")]
 
+    # Write in the same order as the lists so that similar types are grouped together
+    py_class_method_descriptors = []
+    py_method_descriptors = []
+    py_functions = []
+    py_getset_descriptors = []
+    py_properties = []
+    py_member_descriptors = []
+    py_c_functions = []
     for key, descr in descr_items:
-        if type(descr) == ClassMethodDescriptorType:
-            py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
+        # Not sure if this is correct to do, but get the corresponding function when we get a staticmethod or
+        # classmethod object
+        if isinstance(descr, staticmethod):
+            descr = getattr(value, key)
+        elif isinstance(descr, classmethod):
+            descr = getattr(value, key)
 
-    for key, descr in descr_items:
-        if type(descr) == MethodDescriptorType:
-            py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
+        if isinstance(descr, types.ClassMethodDescriptorType):
+            py_class_method_descriptors.append((key, descr))
+        elif isinstance(descr, types.MethodDescriptorType):
+            py_method_descriptors.append((key, descr))
+        elif isinstance(descr, (types.FunctionType, types.MethodType)):
+            py_functions.append((key, descr))
+        elif isinstance(descr, types.GetSetDescriptorType):
+            py_getset_descriptors.append((key, descr))
+        elif isinstance(descr, property):
+            py_properties.append((key, descr))
+        elif isinstance(descr, types.MemberDescriptorType):
+            py_member_descriptors.append((key, descr))
+        elif isinstance(descr, (types.BuiltinFunctionType, types.BuiltinMethodType)):
+            py_c_functions.append((key, descr))
+        else:
+            print("\tnot documenting {}.{} of type {}".format(type_name, key, type(descr)))
 
-    for key, descr in descr_items:
-        if type(descr) in {types.FunctionType, types.MethodType}:
-            pyfunc2predef(_IDENT, fw, key, descr)
+    for key, descr in py_class_method_descriptors:
+        py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
 
-    for key, descr in descr_items:
-        if type(descr) == types.GetSetDescriptorType:
-            py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
+    for key, descr in py_method_descriptors:
+        py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
 
-    for key, descr in descr_items:
-        if type(descr) == PropertyType:
-            pyprop2predef(_IDENT, fw, key, descr)
+    for key, descr in py_functions:
+        pyfunc2predef(_IDENT, fw, key, descr)
+
+    for key, descr in py_getset_descriptors:
+        py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
+
+    for key, descr in py_properties:
+        pyprop2predef(_IDENT, fw, key, descr)
+
+    for key, descr in py_member_descriptors:
+        py_descr2predef(_IDENT, fw, descr, module_name, "", key)
+
+    for key, descr in py_c_functions:
+        py_c_func2predef(_IDENT, fw, module_name, type_name, key, descr, is_class=True)
+
+    all_lists = [py_class_method_descriptors, py_method_descriptors, py_functions, py_getset_descriptors, py_properties]
+    if not any(all_lists):
+        # Add "pass" if nothing was found for writing
+        write_indented_lines(_IDENT, fw, "pass", False)
 
     fw("\n\n")
 
-def pymodule2predef(BASEPATH, module_name, module, title):
+
+def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=None):
+    # The path taken to get to a module may be different to what it reports as its name, and sometimes we treat a class
+    # like a module
+    is_fake_module = not isinstance(module, types.ModuleType)
+    relative_name = (parent_name + "." + module_name) if parent_name else module_name
+    true_module_name = relative_name if is_fake_module else module.__name__
+    if true_module_name in visited:
+        # Usually shouldn't happen since we're generally limiting submodules to those with names that start with the
+        # name of their parent module. Better to be safe than to run into infinite recursion issues.
+        print("- Already visited '{}'. Skipping.".format(true_module_name))
+    else:
+        visited.add(true_module_name)
+
+    module_type = "submodule" if parent_name else "module"
+    if true_module_name in EXCLUDE_MODULES:
+        print("- Skipping {} '{}'".format(module_type, true_module_name))
+        return
+    else:
+        print("- Processing {} '{}'".format(module_type, true_module_name))
+
+    #list submodules:
+    submodules = {}
+
+    attributes_processed_as_modules = set()
+
+    for attribute in sorted(dir(module)):
+        if not attribute.startswith("_"):
+            value = getattr(module, attribute)
+
+            # Check if the attribute is a module
+            if isinstance(value, types.ModuleType):
+                # Check that the submodule name starts with the name of the module, this is so that submodules such as
+                # bpy_extras.asset_utils.bpy are ignored
+                if (
+                        value.__name__.startswith(relative_name)
+                        # msgbus is an exception to Blender's usual naming conventions for submodules
+                        or (relative_name == 'bpy' and value.__name__ == 'msgbus' and attribute == 'msgbus')
+                        # Doesn't follow naming conventions and is also available as freestyle.chainingiterators.CF,
+                        # freestyle.functions.CF and freestyle.shaders.CF, where it will be skipped
+                        or (relative_name == 'freestyle.utils' and attribute == 'ContextFunctions')
+                ):
+                    submodules[attribute] = value
+                else:
+                    print("Found possibly misplaced submodule '{}' as {}.{}. Skipping".format(value.__name__, relative_name, attribute))
+            elif relative_name in ATTRIBUTES_AS_SUBMODULES and attribute in ATTRIBUTES_AS_SUBMODULES[relative_name]:
+                submodules[attribute] = value
+                attributes_processed_as_modules.add(attribute)
+
+    if submodules:
+        dir_path = os.path.join(BASEPATH, module_name)
+        if not os.path.isdir(dir_path):
+            os.mkdir(dir_path)
+        filepath = os.path.join(dir_path, "__init__.py")
+
+        for attribute_name, submodule in submodules.items():
+            # Recursive call for each submodule
+            title_type = "Submodule" if isinstance(submodule, types.ModuleType) else "Fake Submodule"
+            pymodule2predef(
+                dir_path,
+                module_name=attribute_name,
+                module=submodule,
+                title="{} {}.{}".format(title_type, relative_name, attribute_name),
+                visited=visited,
+                parent_name=relative_name)
+    else:
+        filepath = os.path.join(BASEPATH, module_name + ".py")
+
+
     attribute_set = set()
-    filepath = os.path.join(BASEPATH, module_name + ".py")
 
     file = open(filepath, "w")
     fw = file.write
@@ -795,66 +1018,134 @@ def pymodule2predef(BASEPATH, module_name, module, title):
     fw(definition["docstring"])
     fw("\n\n")
 
-    # write members of the module
-    # only tested with PyStructs which are not exactly modules
-    # List the properties, first:
-    for key, descr in sorted(type(module).__dict__.items()):
-        if key.startswith("__"):
-            continue
-        # naughty, we also add getset's into PyStructs, this is not typical py but also not incorrect.
-        if type(descr) == types.GetSetDescriptorType :  # 'bpy_app_type' name is only used for examples and messages
-            py_descr2predef("", fw, descr, module_name, "bpy_app_type", key)
-            attribute_set.add(key)
+    # Add a bpy import so that any bpy.types.<type> can be resolved
+    # It's too much work to figure out when we do/don't need to import bpy, so always do it unless we're bpy itself
+    if relative_name != 'bpy':
+        fw("import bpy\n\n")
 
-    # Then list the attributes:
-    for key, descr in sorted(type(module).__dict__.items()):
-        if key.startswith("__"):
-            continue
-        # naughty, we also add getset's into PyStructs, this is not typical py but also not incorrect.
-        if type(descr) == types.MemberDescriptorType:  # 'bpy_app_type' name is only used for examples and messages
-            py_descr2predef("", fw, descr, module_name, "", key)
-            attribute_set.add(key)
+    # Add submodule imports to help with resolving names
+    for submodule_name in submodules:
+        fw("from . import {}\n".format(submodule_name))
 
-    del key, descr
+    if is_fake_module and isinstance(module, bpy.types.bpy_struct):
+        structs, _, _, _ = get_rna_info()
+        key = ('', module.bl_rna.name)
+        fw("# Start of attributes from type #\n")
+        if key in structs:
+            cls = structs[key]
+            attribute_set.update(rna_struct2predef("", fw, cls, is_fake_module=True))
+        fw("# End of attributes from type #\n\n")
+
+        # write members of the module
+        # only tested with PyStructs which are not exactly modules
+        # List the properties, first:
+        for key, descr in sorted(type(module).__dict__.items()):
+            if key.startswith("__"):
+                continue
+            # naughty, we also add getset's into PyStructs, this is not typical py but also not incorrect.
+            if type(descr) == types.GetSetDescriptorType :  # 'bpy_app_type' name is only used for examples and messages
+                py_descr2predef("", fw, descr, module_name, "bpy_app_type", key)
+                attribute_set.add(key)
+
+        # Then list the attributes:
+        for key, descr in sorted(type(module).__dict__.items()):
+            if key.startswith("__"):
+                continue
+            # naughty, we also add getset's into PyStructs, this is not typical py but also not incorrect.
+            if type(descr) == types.MemberDescriptorType:  # 'bpy_app_type' name is only used for examples and messages
+                py_descr2predef("", fw, descr, module_name, "", key)
+                attribute_set.add(key)
+
+        del key, descr
+
+    all_attributes = []
+    for attribute in dir(module):
+        if (
+                (not attribute.startswith("_") and attribute not in submodules)
+                and (attribute not in attribute_set)
+                and (not attribute.startswith("n_"))
+        ):
+            all_attributes.append((attribute, getattr(module, attribute)))
+
+    all_attributes = sorted(all_attributes)
+
+    # has_bpy_types = relative_name != 'bpy' and any(isinstance(v, bpy.types.bpy_struct) for _, v in all_attributes)
 
     #list classes:
     classes = []
 
-    for attribute in sorted(dir(module)):
-        if not attribute.startswith("_"):
+    for attribute, value in all_attributes:
 
-            if attribute in attribute_set: #skip the processed items:
-                continue
+        if isinstance(value, (types.FunctionType, types.MethodType)):
+            pyfunc2predef("", fw, attribute, value, is_class=False)
 
-            if attribute.startswith("n_"):  # annoying exception, needed for bpy.app
-                continue
-
-            value = getattr(module, attribute)
-
-            value_type = type(value)
-
-            if value_type == types.FunctionType:
-                pyfunc2predef("", fw, attribute, value, is_class=False)
-
-            elif value_type in (types.BuiltinMethodType, types.BuiltinFunctionType):  # both the same at the moment but to be future proof
-                # note: can't get args from these, so dump the string as is
-                # this means any module used like this must have fully formatted docstrings.
+        elif isinstance(value, bpy.types.bpy_func) and is_fake_module and isinstance(module, bpy.types.bpy_struct):
+            # It should be possible to get the function info
+            _structs, funcs, _ops, _props = get_rna_info()
+            key = (module.bl_rna.name, attribute)
+            if key in funcs:
+                rna_function2predef("", fw, funcs[key])
+            else:
+                print("Could not find rna_function with key: {}".format(key))
                 py_c_func2predef("", fw, module_name, module, attribute, value, is_class=False)
 
-            elif value_type == type:
-                classes.append((attribute, value))
+        # BuiltinMethodType and BuiltinFunctionType both the same at the moment but to be future proof
+        elif isinstance(value, (types.BuiltinMethodType, types.BuiltinFunctionType, BMeshOpFuncType, bpy.types.bpy_func)):
+            # note: can't get args from these, so dump the string as is
+            # this means any module used like this must have fully formatted docstrings.
+            py_c_func2predef("", fw, module_name, module, attribute, value, is_class=False)
 
-            elif value_type in (bool, int, float, str, tuple):
-                # constant, not much fun we can do here except to list it.
-                # TODO, figure out some way to document these!
-                fw("{0} = {1} #constant value \n\n".format(attribute,repr(value)))
+        elif isinstance(value, types.MemberDescriptorType):
+            py_descr2predef("", fw, value, module_name, "", attribute)
 
-            else:
-                print("\tnot documenting %s.%s" % (module_name, attribute))
+        elif isinstance(value,type):
+            classes.append((attribute, value))
+
+        elif isinstance(value, (bool, int, float, str, bytes)) or type(value) == tuple:
+            # constant, not much fun we can do here except to list it.
+            # TODO, figure out some way to document these!
+            fw("{0} = {1} # instance value \n\n".format(attribute, repr(value)))
+
+        # tuple subclasses may not print well, so convert to a regular tuple first
+        elif isinstance(value, tuple):
+            fw("{0} = {1} # instance value: {2} \n\n".format(attribute, repr(tuple(value)), repr(value)))
+
+        elif isinstance(value, list):
+            elements_text = " (elements omitted)" if value else ""
+            fw("{0} = [] # instance value{1} \n\n".format(attribute, elements_text))
+
+        elif isinstance(value, set):
+            elements_text = " (elements omitted)" if value else ""
+            fw("{0} = set() # instance value{1} \n\n".format(attribute, elements_text))
+
+        elif isinstance(value, dict):
+            elements_text = " (elements omitted)" if value else ""
+            fw("{0} = {{}} # instance value{1} \n\n".format(attribute, elements_text))
+
+        elif isinstance(value, types.MappingProxyType):
+            elements_text = " (elements omitted)" if value else ""
+            fw("{0} = types.MappingProxyType() # instance value{1} \n\n".format(attribute, elements_text))
+
+        elif isinstance(value, bpy.types.bpy_struct):
+            property2predef("", fw, module, attribute)
+            # bpy specific
+            # # the data members:
+            # property2predef("", fw, bpy, "context")
+            #
+            # property2predef("", fw, bpy, "data")
+        else:
+            if true_module_name in DOCUMENT_ALL_ATTRIBUTES_MODULES:
+                # Probably more we can do, but this should suffice for now
+                if value is None:
+                    fw("{} = None # instance value\n\n".format(attribute))
+                else:
+                    fw("{} = None # instance value currently of type {}\n\n".format(attribute, type(value)))
+            elif not isinstance(value, types.ModuleType):
+                print("\tnot documenting %s.%s with type: %s" % (module_name, attribute, type(value)))
                 continue
 
-            attribute_set.add(attribute)
-            # TODO, more types...
+        attribute_set.add(attribute)
+        # TODO, more types...
 
     # write collected classes now
     for (type_name, value) in classes:
@@ -895,40 +1186,52 @@ def rna_function2predef(ident, fw, descr):
 
     fw("\n")
 
-def rna_struct2predef(ident, fw, descr):
+def rna_struct2predef(ident, fw, descr, is_fake_module=False):
     ''' Creates declaration of a bpy structure
         Details:
         @ident (string): the required prefix (spaces)
         @fw (function): the unified shortcut to print() or file.write() function
         @descr (rna_info.InfoStructRNA): the descriptor of a Blender Python class
+        @fake_module (bool): if true, print only the properties and functions without indentation and return attribute names
     '''
-    print("class %s:\n" % descr.identifier)
-    definition = doc2definition(rna2list(descr))
-    write_indented_lines(ident,fw, definition["declaration"],False)
 
-    if "docstring" in definition:
-        write_indented_lines(ident, fw, definition["docstring"], False)
+    if not is_fake_module:
+        print("class %s:\n" % descr.identifier)
+        definition = doc2definition(rna2list(descr))
+        write_indented_lines(ident,fw, definition["declaration"],False)
 
-    #native properties
-    ident = ident + _IDENT
-    properties = descr.properties
-    properties.sort(key= lambda prop: prop.identifier)
-    for prop in properties:
+        if "docstring" in definition:
+            write_indented_lines(ident, fw, definition["docstring"], False)
+
+        #native properties
+        ident = ident + _IDENT
+
+    rna_properties = descr.properties
+    rna_properties.sort(key= lambda prop: prop.identifier)
+    for prop in rna_properties:
         rna_property2predef(ident,fw,prop)
 
     #Python properties
-    properties = descr.get_py_properties()
-    for identifier, prop in properties:
+    py_properties = descr.get_py_properties()
+    for identifier, prop in py_properties:
         pyprop2predef(ident,fw,identifier,prop)
 
     #Blender native functions
-    functions = descr.functions
-    for function in functions:
+    rna_functions = descr.functions
+    for function in rna_functions:
         rna_function2predef(ident, fw, function)
 
-    functions = descr.get_py_functions()
-    for identifier, function in functions:
+    py_functions = descr.get_py_functions()
+    for identifier, function in py_functions:
         pyfunc2predef(ident, fw, identifier, function, is_class = True)
+
+    if is_fake_module:
+        all_attributes = set()
+        all_attributes.update(prop.identifier for prop in rna_properties)
+        all_attributes.update(func.identifier for func in rna_functions)
+        all_attributes.update(prop[0] for prop in py_properties)
+        all_attributes.update(func[0] for func in py_functions)
+        return all_attributes
 
 def ops_struct2predef(ident, fw, module, operators):
     ''' Creates "pseudostructure" for a given module of operators
@@ -964,7 +1267,7 @@ def bpy_base2predef(ident, fw):
     descr_items = [(key, descr) for key, descr in sorted(bpy.types.Struct.__bases__[0].__dict__.items()) if not key.startswith("__")]
 
     for key, descr in descr_items:
-        if type(descr) == MethodDescriptorType:  # GetSetDescriptorType, GetSetDescriptorType's are not documented yet
+        if type(descr) == types.MethodDescriptorType:  # GetSetDescriptorType, GetSetDescriptorType's are not documented yet
             py_descr2predef(ident, fw, descr, "bpy.types", _BPY_STRUCT_FAKE, key)
 
     for key, descr in descr_items:
@@ -972,75 +1275,123 @@ def bpy_base2predef(ident, fw):
             py_descr2predef(ident, fw, descr, "bpy.types", _BPY_STRUCT_FAKE, key)
     fw("\n\n")
 
-def bpy2predef(BASEPATH, title):
+def property2predef(ident, fw, module, name):
+    ''' writes definition of a named property
+        Details:
+        @ident (string): the required prefix (spaces)
+        @fw (function): the unified shortcut to print() or file.write() function
+        @module (string): one of bpy.ops names ("actions", for example)
+        @name (string): name of the property
+    '''
+    value = getattr(module, name, None)
+    if value:
+        value_type = getattr(value, "rna_type", None)
+        module_name = module.__name__ if isinstance(module, types.ModuleType) else module
+        if module_name == 'bpy':
+            prefix = "types."
+        elif module_name == 'bpy.types':
+            prefix = ""
+        else:
+            prefix = "bpy.types."
+        if value_type:
+            fw("{0} = {1}{2}\n".format(name, prefix, value_type.identifier))
+        else:
+            pyclass2predef(fw, module, name, value)
+    fw("\n\n")
+
+
+_RNA_STRUCTS = None
+_RNA_FUNCS = None
+_RNA_OPS = None
+_RNA_PROPS = None
+
+
+def get_rna_info():
+    global _RNA_STRUCTS, _RNA_FUNCS, _RNA_OPS, _RNA_PROPS
+    if _RNA_STRUCTS is None or _RNA_FUNCS is None or _RNA_OPS is None or _RNA_PROPS is None:
+        info = rna_info.BuildRNAInfo()
+        _RNA_STRUCTS, _RNA_FUNCS, _RNA_OPS, _RNA_PROPS = info
+        return info
+    return _RNA_STRUCTS, _RNA_FUNCS, _RNA_OPS, _RNA_PROPS
+
+
+def bpy2predef(BASEPATH, title, write_ops, write_types):
     ''' Creates the bpy.predef file. It contains the bpy.dta, bpy.ops, bpy.types
         Arguments:
         BASEPATH (string): path for the output file
         title(string): descriptive title (the comment for the whole module)
     '''
-    def property2predef(ident, fw, module, name):
-        ''' writes definition of a named property
-            Details:
-            @ident (string): the required prefix (spaces)
-            @fw (function): the unified shortcut to print() or file.write() function
-            @module (string): one of bpy.ops names ("actions", for example)
-            @name (string): name of the property
-        '''
-        value = getattr(module, name, None)
-        if value:
-            value_type = getattr(value, "rna_type", None)
-            if value_type:
-                fw("{0} = types.{1}\n".format(name, value_type.identifier))
-            else:
-                pyclass2predef(fw, modulr, name, value)
-        fw("\n\n")
-
     #read all data:
-    structs, funcs, ops, props = rna_info.BuildRNAInfo()
-    #open the file:
-    filepath = os.path.join(BASEPATH, "bpy.py")
-    file = open(filepath, "w")
-    fw = file.write
-    #Start the file:
-    definition = doc2definition(title,"") #skip the leading spaces at the first line...
-    fw(definition["docstring"])
-    fw("\n\n")
+    structs, funcs, ops, props = get_rna_info()
 
-    #group operators by modules: (dictionary of list of the operators)
-    op_modules = {}
-    for op in ops.values():
-        op_modules.setdefault(op.module_name, []).append(op)
+    # make bpy directory
+    dirpath = os.path.join(BASEPATH, "bpy")
+    if not os.path.isdir(dirpath):
+        os.mkdir(dirpath)
 
-    #Special declaration of non-existing structiure just fo the ops member:
-    fw("class ops:\n")
-    fw(_IDENT+"'''Spcecial class, created just to reflect content of bpy.ops'''\n\n")
-    for op_module_name, ops_mod in sorted(op_modules.items(),key = lambda m : m[0]):
-        if op_module_name == "import":
-            continue
-        ops_struct2predef(_IDENT, fw, op_module_name, ops_mod)
+    # # open the file:
+    # filepath = os.path.join(dirpath, "__init__.py")
+    # file = open(filepath, "w")
+    # fw = file.write
+    # #Start the file:
+    # definition = doc2definition(title, "")  # skip the leading spaces at the first line...
+    # fw(definition["docstring"])
+    # fw("\n\n")
+    #
+    #
+    # file.close()
 
-    #classes (Blender structures:)
-    fw("class types:\n")
-    fw(_IDENT+"'''A container for all Blender types'''\n" + _IDENT + "\n")
+    if write_ops:
+        #group operators by modules: (dictionary of list of the operators)
+        ops_dirpath = os.path.join(dirpath, "ops")
+        if not os.path.isdir(ops_dirpath):
+            os.mkdir(ops_dirpath)
+        op_modules = {}
+        for op in ops.values():
+            op_modules.setdefault(op.module_name, []).append(op)
 
-    #base structure
-    bpy_base2predef(_IDENT, fw)
+        #Special declaration of non-existing structiure just fo the ops member:
+        ops_init_filepath = os.path.join(ops_dirpath, "__init__.py")
+        file = open(ops_init_filepath, "w")
+        fw = file.write
+        fw("'''bpy.ops submodule'''\n\n")
+        file.close()
 
-    #sort the type names:
-    classes = list(structs.values())
-    classes.sort(key=lambda cls: cls.identifier)
+        for op_module_name, ops_mod in sorted(op_modules.items(),key = lambda m : m[0]):
+            if op_module_name == "import":
+                continue
+            # Write to {op_module_name}.py file in the ops directory
+            ops_module_filepath = os.path.join(ops_dirpath, "{}.py".format(op_module_name))
+            file = open(ops_module_filepath, "w")
+            fw = file.write
+            ops_struct2predef("", fw, op_module_name, ops_mod)
+            file.close()
 
-    for cls in classes:
-        # skip the operators!
-        if "_OT_" not in cls.identifier:
-            rna_struct2predef(_IDENT, fw, cls)
+    if write_types:
+        #classes (Blender structures:)
+        types_dirpath = os.path.join(dirpath, "types")
+        if not os.path.isdir(types_dirpath):
+            os.mkdir(types_dirpath)
+        types_init_filepath = os.path.join(types_dirpath, "__init__.py")
+        file = open(types_init_filepath, "w")
+        # file = open(os.path.join(dirpath, "types.py"), "w")
+        fw = file.write
+        fw("'''bpy.types submodule'''\n\n")
 
-    #the data members:
-    property2predef("", fw, bpy, "context")
+        fw("import bpy\n\n")
 
-    property2predef("", fw, bpy, "data")
+        #base structure
+        bpy_base2predef("", fw)
 
-    file.close()
+        #sort the type names:
+        classes = list(structs.values())
+        classes.sort(key=lambda cls: cls.identifier)
+
+        for cls in classes:
+            # skip the operators!
+            if "_OT_" not in cls.identifier:
+                rna_struct2predef("", fw, cls)
+        file.close()
 
 def rna2predef(BASEPATH):
 
@@ -1049,61 +1400,31 @@ def rna2predef(BASEPATH):
     except:
         pass
 
-    if "bpy" in INCLUDE_MODULES:
-        bpy2predef(BASEPATH,"Blender API main module")
+    # Special handling for these modules
+    included_special_modules = _SPECIAL_HANDLING_MODULES.intersection(INCLUDE_MODULES)
+
+    if included_special_modules or 'bpy' in INCLUDE_MODULES:
+        write_ops = 'bpy.ops' not in EXCLUDE_MODULES
+        write_types = 'bpy.types' not in EXCLUDE_MODULES
+        bpy2predef(BASEPATH, "Blender API main module", write_ops, write_types)
+
+    # None of the special modules should be included if found recursively from other modules, so they are always
+    # excluded. For example, bpy can be found at bpy_extras.asset_utils.bpy
+    EXCLUDE_MODULES.update(_SPECIAL_HANDLING_MODULES)
     # internal modules
 
     module = None
 
-    #if "bpy.context" not in EXCLUDE_MODULES:
-        # one of a kind, context doc (uses ctypes to extract info!)
-        #pycontext2sphinx(BASEPATH)
-
-    # python modules
-    if "bpy.utils" in INCLUDE_MODULES:
-        from bpy import utils as module
-        pymodule2predef(BASEPATH, "bpy.utils", module, "Utilities (bpy.utils)")
-
-    if "bpy.path" in INCLUDE_MODULES:
-        from bpy import path as module
-        pymodule2predef(BASEPATH, "bpy.path", module, "Path Utilities (bpy.path)")
-
-    # C modules
-    if "bpy.app" in INCLUDE_MODULES:
-        from bpy import app as module
-        pymodule2predef(BASEPATH, "bpy.app", module, "Application Data (bpy.app)")
-
-    if "bpy.props" in INCLUDE_MODULES:
-        from bpy import props as module
-        pymodule2predef(BASEPATH, "bpy.props", module, "Property Definitions (bpy.props)")
-
-    if "mathutils" in INCLUDE_MODULES:
-        import mathutils as module
-        pymodule2predef(BASEPATH, "mathutils", module, "Math Types & Utilities (mathutils)")
-
-    if "mathutils.geometry" in INCLUDE_MODULES:
-        import mathutils.geometry as module
-        pymodule2predef(BASEPATH, "mathutils.geometry", module, "Geometry Utilities (mathutils.geometry)")
-
-    if "blf" in INCLUDE_MODULES:
-        import blf as module
-        pymodule2predef(BASEPATH, "blf", module, "Font Drawing (blf)")
-
-    if "bgl" in INCLUDE_MODULES:
-        import bgl as module
-        pymodule2predef(BASEPATH, "bgl", module, "Open GL functions (bgl)")
-
-    if "aud" in INCLUDE_MODULES:
-        import aud as module
-        pymodule2predef(BASEPATH, "aud", module, "Audio System (aud)")
-
-    if "bmesh" in INCLUDE_MODULES:
-        import bmesh as module
-        pymodule2predef(BASEPATH, "bmesh", module, "BMesh mesh manipulations (bmesh)")
-
-    if "bmesh.types" in INCLUDE_MODULES:
-        import bmesh.types as module
-        pymodule2predef(BASEPATH, "bmesh.types", module, "BMesh mesh manipulations types (bmesh.types)")
+    # Some modules may reference other modules in a loop so a set is needed to keep track of which modules have
+    # already been visited
+    visited = set()
+    for module_name in INCLUDE_MODULES:
+        if module_name not in EXCLUDE_MODULES:
+            module = importlib.import_module(module_name)
+            if module_name == 'bgl':
+                module = importlib.reload(module)
+            print("\n\n--- Generating predef for included module {}".format(module_name))
+            pymodule2predef(BASEPATH, module_name, module, "Module {}".format(module_name), visited)
 
     del module
 
@@ -1147,8 +1468,15 @@ def main():
             import filecmp
 
             # now move changed files from 'path_in_tmp' --> 'path_in'
-            file_list_path_in = set(os.listdir(path_in))
-            file_list_path_in_tmp = set(os.listdir(path_in_tmp))
+
+            file_list_path_in = set()
+            for dirpath, _, filenames in os.walk(path_in):
+                for filename in filenames:
+                    file_list_path_in.add(os.path.relpath(os.path.join(dirpath, filename), path_in))
+            file_list_path_in_tmp = set()
+            for dirpath, _, filenames in os.walk(path_in_tmp):
+                for filename in filenames:
+                    file_list_path_in_tmp.add(os.path.relpath(os.path.join(dirpath, filename), path_in_tmp))
 
             # remove deprecated files that have been removed.
             for f in sorted(file_list_path_in):
@@ -1167,10 +1495,15 @@ def main():
                         do_copy = False
 
                 if do_copy:
+                    os.makedirs(os.path.dirname(f_to), exist_ok=True)
                     print("\tupdating: %s" % f)
                     shutil.copy(f_from, f_to)
                 '''else:
                     print("\tkeeping: %s" % f) # eh, not that useful'''
+        if bpy.app.background:
+            print("\nSome graphics dependent types and modules (mainly the bgl module) may not be loaded fully when"
+                  " running with the -b argument. If you need full predefinition files for graphics related types and"
+                  " modules, run the script without the -b argument")
 
 
 
