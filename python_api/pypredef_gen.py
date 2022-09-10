@@ -41,7 +41,7 @@ This program is based on Campbell Barton's sphinx_doc_gen.py script
 #            the Brian update. I added the "pass" statement generation there.
 
 #2016-June: modifications by Robert Forsman for use with pycharm
-#2022-08-29: Updates by Mysteryem:
+#2022-August/September: Updates by Mysteryem:
 #            * Add --factory-startup to help message's example usage so that classes/attributes/etc. from addons are not
 #              included by default
 #            * Add --external-rst-dir to load external module .rst files supporting bgl and bmesh.ops
@@ -63,6 +63,15 @@ This program is based on Campbell Barton's sphinx_doc_gen.py script
 #              With these type hints, the corresponding property type will be hinted when accessing user defined
 #              properties. (The real bpy.props functions return a hidden _PropertyDeferred type)
 #            * Include "__" prefixed functions so long as they do not exist on the object type
+#            * Add *args to operator parameters for their 3 optional positional arguments
+#            * Add fake Protocol classes to property types to give typed access to collection and array elements
+
+# TODO: Operator return type needs to be corrected to set[str]
+# TODO: Certain classes such as bpy.types.IMAGE_MT_image and bpy.types.OBJECT_PT_collections are missing
+# TODO: Operators should be callable classes, since they also have functions such as idname and idname_py (they are
+#  subclasses of bpy.ops._BPyOpsSubModOp, but that class isn't available as bpy.ops.<anything> returns a module)
+# TODO: Check if bpy_extras.anim_utils, bpy_extras.keyconfig_utils and gpu_extras.presets also need pre-loading on newer
+#  Blender versions
 
 script_help_msg = '''
 Usage:
@@ -124,6 +133,7 @@ INCLUDE_MODULES = (
     "imbuf",
     "freestyle",
     "rna_info",
+    "idprop",
 )
 
 # Modules to exclude, each module's .__name__ is checked against this set
@@ -513,7 +523,7 @@ def rna2list(info):
                          "ord": oridinal number
 
     '''
-    def type_name(name, include_namespace=False, array_dimensions=None, is_read_only=False, built_in_type=None, built_in_element_type=None):
+    def type_name(name, include_namespace=False, array_dimensions=None, is_read_only=False, built_in_type=None, collection_element_type=None):
         ''' Helper function, that corrects some wrong type names
             Arguments:
             @name (string): "raw" name, received from RNA
@@ -521,43 +531,63 @@ def rna2list(info):
             @array_dimensions: int bpy_prop_array specifying dimensions when the type is an array type
             returns the corrected type name (string)
         '''
-        names = []
         # Can be None for a collection type that is elements only
         if name is not None:
             if name in TYPE_ABERRATIONS:
                 name = TYPE_ABERRATIONS[name]
-                names.append(name)
             if include_namespace:
                 name = "bpy.types." + name
-                names.append(name)
-            if array_dimensions is not None:
+
+        if built_in_type is None:
+            return name
+        else:
+            names = []
+            if collection_element_type:
+                # Append fake Protocol to give typed access of the collection elements
+                names.append(f"prop_collection_protocol[{collection_element_type}]")
+
+                if name:
+                    # The collection has a base type that can be accessed through .rna_type, append the fake Protocol
+                    # that gives typed access to .rna_type
+                    names.append(f"prop_protocol[{name}]")
+                    # Append the base type itself
+                    names.append(name)
+
+                # Append the collection type itself, this should always be bpy_prop_collection, though it might be
+                # possible to get a bpy_prop_collection_idprop if addons are loaded
+                names.append(built_in_type)
+                # Return a Union of the types and fake Protocols
+                return f"Union[{', '.join(names)}]"
+            elif array_dimensions is not None:
+                array_shape_annotation = name
                 at_least_one_dimension_specified = False
                 for dim_length in reversed(array_dimensions):
                     if dim_length != 0:
                         if is_read_only:
-                            name = "[" + ", ".join([name] * dim_length) + "]"
+                            array_shape_annotation = "tuple[" + ", ".join([array_shape_annotation] * dim_length) + "]"
                         else:
-                            name = "[" + ", ".join([name] * dim_length) + "]"
+                            array_shape_annotation = "list[" + ", ".join([array_shape_annotation] * dim_length) + "]"
                         at_least_one_dimension_specified = True
                 if not at_least_one_dimension_specified:
                     # All 0 usually means it is variable, e.g. Image.pixels
                     if is_read_only:
-                        name = "[" + name + "]"
+                        array_shape_annotation = "tuple[" + array_shape_annotation + ", ...]"
                     else:
-                        name = "[" + name + "]"
-        if built_in_type is not None:
-            if built_in_element_type:
-                names.append("Annotated[" + built_in_type + ", " + built_in_element_type + "]")
-            elif names:
-                names = ["Annotated[" + built_in_type + ", " + names[0] + "]"]
-            else:
-                names = ["Annotated[" + built_in_type + ", " + name + "]"]
-        elif built_in_element_type:
-            names.append("list[" + built_in_element_type + "]")
-        if len(names) > 1:
-            return "Union[" + ", ".join(names) + "]"
-        else:
-            return names[0] if names else name
+                        array_shape_annotation = "list[" + array_shape_annotation + "]"
+
+                # Annotate the type to indicate array shape and element mutability
+                annotated_type = f"Annotated[{built_in_type}, {array_shape_annotation}]"
+
+                # The array type depends on its subtype
+                if built_in_type == "bpy_prop_array":
+                    # The element type of a bpy_prop_array can vary between properties. As bpy_prop_array isn't Generic,
+                    # to indicate the element type, we use a fake Protocol:
+                    # Return a Union of a fake Protocol to give typed access to the elements and the annotated type
+                    return f"Union[prop_array_protocol[{name}], {annotated_type}]"
+                else:
+                    # If it's not a bpy_prop_array, it could be a mathutils.Vector, mathutils.Matrix, mathutils.Euler,
+                    # mathutils.Quaternion or mathutils.Color
+                    return annotated_type
 
     def get_argitem(arg, prev_ord, is_return=False):
         '''Helper function, that creates an argument definition subdictionary
@@ -626,18 +656,15 @@ def rna2list(info):
         array_dimensions = None
         prop_type = None
         built_in_type = None
-        built_in_element_type = None
+        collection_element_type = None
         if info.type == 'collection':
             built_in_type = 'bpy_prop_collection'
             if info.collection_type:
                 # The collection has a type itself and may have properties
                 prop_type = info.collection_type.identifier
-                if info.fixed_type:
-                    # The element type for the collection
-                    built_in_element_type = info.fixed_type.identifier
-            elif info.fixed_type:
-                # The collection has no type itself, it is only elements of a type
-                built_in_element_type = info.fixed_type.identifier
+            if info.fixed_type:
+                # The element type for the collection
+                collection_element_type = "bpy.types." + info.fixed_type.identifier
         elif info.type == 'enum':
             # Technically is bpy_prop, but is only accessible as such from path_resolve(<path>, False)
             # built_in_type = 'bpy_prop'
@@ -678,7 +705,7 @@ def rna2list(info):
         prototype = "{0}: {1}".format(
             info.identifier,
             type_name(prop_type, info.fixed_type is not None, array_dimensions, info.is_readonly, built_in_type,
-                      built_in_element_type))
+                      collection_element_type))
         if info.is_readonly:
             prototype = prototype + " # (read only)"
 
@@ -1502,7 +1529,17 @@ def rna_function2predef(ident, fw, descr, is_bpy_op=False):
         definition.setdefault("@returns", return_description)
 
     definition = doc2definition(definition)
-    write_indented_lines(ident,fw,definition["declaration"],False) #may contain two lines: decorator and declaration
+
+    declaration = definition["declaration"]
+    if is_bpy_op:
+        # bpy.op functions take 3 optional positional arguments, in the form of
+        # override_context: dict, execution_context: str, undo: bool
+        # but these cannot be specified by name, so we must present them as *args
+        # Insert the *args parameter into the declaration
+        no_existing_args = declaration.find('()') != -1
+        declaration = declaration.replace('(', "(*args: Union[dict, str, bool]" if no_existing_args else "(*args: Union[dict, str, bool], ", 1)
+
+    write_indented_lines(ident,fw,declaration,False) #may contain two lines: decorator and declaration
 
     if "docstring" in definition:
         write_indented_lines(ident, fw, definition["docstring"], False)
@@ -1570,7 +1607,7 @@ def ops_struct2predef(ident, fw, module, operators):
         @module (string): one of bpy.ops names ("actions", for example)
         @operators (list of rna_info.InfoOperatorRNA): operators, grouped in this module
     '''
-    fw("from typing import Literal\n\n")
+    fw("from typing import Literal, Union\n\n")
     # fmt = ident + "class {0}:\n"
     # fw(fmt.format(module)) #"action" -> "class action:\n"
     # ident = ident+_IDENT
@@ -1757,10 +1794,46 @@ def bpy2predef(BASEPATH, title, write_ops, write_types):
         fw("import bpy\n"
            "import mathutils\n")
         # Extra imports for type hints
-        fw("from typing import Union, Literal, Annotated\n\n")
+        fw("from typing import Union, Literal, Annotated, Sequence, TypeVar, Iterator, Protocol, Optional\n\n")
 
         #base structure
         bpy_base2predef("", fw)
+
+        # Some bpy_prop_collections have int keys and some have str keys, I don't know if there's a way to tell them
+        # apart
+        # Note that only the collections in bpy.data support get(key: tuple[str, Optional[str]])
+        fake_protocols = (
+            """
+# Prop collection keys can be either int or str
+prop_collection_key = Union[int, str]
+T = TypeVar('T')
+R = TypeVar('R', bounds='type')
+
+class prop_protocol(Protocol[R]):
+    \"\"\"Fake protocol class added by pypredef_gen\"\"\"
+    rna_type: R
+
+class prop_collection_protocol(Protocol[T]):
+    \"\"\"Fake protocol class added by pypredef_gen\"\"\"
+    def __getitem__(self, key) -> T: ...
+    def __iter__(self) -> Iterator[T]: ...
+    def find(self, key: str) -> int: ...
+    def get(self, key: Union[str, tuple[str, Optional[str]]], default=None) -> T: ...
+    def items(self) -> list[tuple[prop_collection_key, T]]: ...
+    def keys(self) -> list[str]: ...
+    def values(self) -> list[T]: ...
+
+class prop_array_protocol(Protocol[T]):
+    \"\"\"Fake protocol class added by pypredef_gen\"\"\"
+    @overload
+    def __getitem__(self, key: int) -> T: ...
+    @overload
+    def __getitem__(self, s: slice) -> Sequence[T]: ...
+    def __getitem__(self, key) -> T: ...
+    def __iter__(self) -> Iterator[T]: ...
+
+""")
+        fw(fake_protocols)
 
         #sort the type names:
         classes = list(structs.values())
@@ -1797,6 +1870,17 @@ def rna2predef(BASEPATH):
     # Some modules may reference other modules in a loop so a set is needed to keep track of which modules have
     # already been visited
     visited = set()
+
+    # These submodules don't get added to bpy_extras unless we pre-load them first, not sure why
+    if 'bpy_extras' in INCLUDE_MODULES:
+        importlib.import_module('bpy_extras.mesh_utils')
+        importlib.import_module('bpy_extras.image_utils')
+        importlib.import_module('bpy_extras.view3d_utils')
+
+    # And similarly, but for the gpu_extras module
+    if 'gpu_extras' in INCLUDE_MODULES:
+        importlib.import_module('gpu_extras.batch')
+
     for module_name in INCLUDE_MODULES:
         if module_name not in EXCLUDE_MODULES:
             module = importlib.import_module(module_name)
