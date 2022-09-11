@@ -64,14 +64,13 @@ This program is based on Campbell Barton's sphinx_doc_gen.py script
 #              properties. (The real bpy.props functions return a hidden _PropertyDeferred type)
 #            * Include "__" prefixed functions so long as they do not exist on the object type
 #            * Add *args to operator parameters for their 3 optional positional arguments
-#            * Add fake Protocol classes to property types to give typed access to collection and array elements
+#            * Add fake Generic classes to property types to give typed access to collection and array elements
+#            * Copy module .py files if they exist
+#            * Include bases in class definitions
 
 # TODO: Operator return type needs to be corrected to set[str]
-# TODO: Certain classes such as bpy.types.IMAGE_MT_image and bpy.types.OBJECT_PT_collections are missing
 # TODO: Operators should be callable classes, since they also have functions such as idname and idname_py (they are
 #  subclasses of bpy.ops._BPyOpsSubModOp, but that class isn't available as bpy.ops.<anything> returns a module)
-# TODO: Check if bpy_extras.anim_utils, bpy_extras.keyconfig_utils and gpu_extras.presets also need pre-loading on newer
-#  Blender versions
 
 script_help_msg = '''
 Usage:
@@ -94,8 +93,12 @@ Usage:
   With these two .rst files in the directory specified by --external-rst-dir, the bgl and bmesh.ops modules will
   generate predefinition files with significantly more information. Attempting to use other .rst files isn't supported
   and may not work correctly.
+  
+  --skip-files or the -s flag can be added after the -- to skip any modules which already exist as files, intended for
+  use if you have already added these files as external libraries
 '''
 
+# Since the script is set up for use with PyCharm now, this comment may not be correct
 '''
 Comments to using the pypredef files in Eclipse:
 1. Add the directory that contains the *.pypredef files to PYTHONPATH of your project:
@@ -116,16 +119,18 @@ c = app.build_time
 '''
 
 import sys
+import builtins
 
 # Switch for quick testing
 # select modules to build:
-INCLUDE_MODULES = (
+INCLUDE_MODULES = [
     "bpy",
     "bpy_extras",
     "bmesh",
     "aud",
     "bgl",
     "bl_math",
+    "bl_ui",
     "blf",
     "mathutils",
     "gpu",
@@ -134,7 +139,7 @@ INCLUDE_MODULES = (
     "freestyle",
     "rna_info",
     "idprop",
-)
+]
 
 # Modules to exclude, each module's .__name__ is checked against this set
 EXCLUDE_MODULES = {
@@ -179,6 +184,7 @@ _BPY_STRUCT_FAKE = "bpy_struct"
 _BPY_FULL_REBUILD = False
 _IDENT = "   "
 _SPECIAL_HANDLING_MODULES = {"bpy.ops", "bpy.types"}
+_ARG_SKIP_FILES = False
 
 #dictionary, used to correct some type descriptions:
 TYPE_ABERRATIONS = {
@@ -242,9 +248,12 @@ TYPE_ABERRATIONS = {
         "tuple of mathutils.Vector's or None when there is no intersection":
             "Union[(mathutils.Vector, mathutils.Vector), None]  # None when there is no intersection",
         "pair of lists": "(list, list)",
-        "list of four floats, list of four mathutils.Vector types": "[float], [mathutils.Vector]  # Four elements in each list",
+        "list of four floats, list of four mathutils.Vector types": "list[list[float], list[mathutils.Vector]]  # list"
+                                                                    " of four floats, list of four mathutils.Vector"
+                                                                    " types",
         "BMVert, BMEdge or BMFace": "Union[BMVert, BMEdge, BMFace]",
         "dict with string keys": "dict[str, Any]",
+        "int or float": "Union[int, float]",
 }
 
 IGNORED_CLASS_KEYS = {
@@ -253,18 +262,21 @@ IGNORED_CLASS_KEYS = {
 IGNORED_CLASS_KEYS.update(object.__dict__)
 
 # Return type hints for bpy.props functions
+# Note that PyCharm fails to get the correct typing from annotations defined using these bpy.props functions if the
+# function hints that it returns a Union of types. This means everything but FloatVectorProperty should get typed
+# correctly
 _BPY_PROPS_RETURN_HINTS = {
     'BoolProperty': "type[bool]",
-    'BoolVectorProperty': "type[Annotated[bpy.types.bpy_prop_array, bool]]",
+    'BoolVectorProperty': "type[bpy.types._generic_prop_array[bool]]",
     'EnumProperty': "type[str]",
     'FloatProperty': "type[float]",
-    'FloatVectorProperty': "type[Annotated[bpy.types.bpy_prop_array, float]]",
+    'FloatVectorProperty': "type[_FloatVectorTypeAmalgamation]",
     'IntProperty': "type[int]",
-    'IntVectorProperty': "type[Annotated[bpy.types.bpy_prop_array, int]]",
+    'IntVectorProperty': "type[bpy.types._generic_prop_array[int]]",
     'StringProperty': "type[str]",
     # For these we add a T TypeVar and a T type hint to the 'type' parameter
     'PointerProperty': "T",
-    'CollectionProperty': "type[Annotated[bpy.types.bpy_prop_collection_idprop, T]]",
+    'CollectionProperty': "type[bpy.types._generic_prop_collection_idprop[T]]",
 }
 
 _PROP_ARRAY_SUBTYPE_TO_CLASS = {
@@ -310,6 +322,7 @@ import bpy
 import rna_info
 import bmesh
 import argparse
+import shutil
 
 # BMeshOpFunc type is not exposed directly by the current Blender API
 BMeshOpFuncType = type(bmesh.ops.split)
@@ -541,23 +554,26 @@ def rna2list(info):
         if built_in_type is None:
             return name
         else:
-            names = []
             if collection_element_type:
-                # Append fake Protocol to give typed access of the collection elements
-                names.append(f"prop_collection_protocol[{collection_element_type}]")
+                # Start with the fake generic class to give typed access of the collection elements
+                names = [f"_generic_prop_collection[{collection_element_type}]"]
 
                 if name:
-                    # The collection has a base type that can be accessed through .rna_type, append the fake Protocol
-                    # that gives typed access to .rna_type
-                    names.append(f"prop_protocol[{name}]")
+                    # The collection has a base type that can be accessed through .rna_type, append the generic prop
+                    # type that gives typed access to .rna_type
+                    names.append(f"_generic_prop[{name}]")
                     # Append the base type itself
                     names.append(name)
 
-                # Append the collection type itself, this should always be bpy_prop_collection, though it might be
-                # possible to get a bpy_prop_collection_idprop if addons are loaded
-                names.append(built_in_type)
-                # Return a Union of the types and fake Protocols
-                return f"Union[{', '.join(names)}]"
+                if built_in_type != 'bpy_prop_collection':
+                    # Append the collection type itself, this should always be bpy_prop_collection, though it might be
+                    # possible to get a bpy_prop_collection_idprop if addons are loaded
+                    names.append(built_in_type)
+                if len(names) > 1:
+                    # Return a Union of the types
+                    return f"Union[{', '.join(names)}]"
+                else:
+                    return names[0]
             elif array_dimensions is not None:
                 array_shape_annotation = name
                 at_least_one_dimension_specified = False
@@ -575,19 +591,19 @@ def rna2list(info):
                     else:
                         array_shape_annotation = "list[" + array_shape_annotation + "]"
 
-                # Annotate the type to indicate array shape and element mutability
-                annotated_type = f"Annotated[{built_in_type}, {array_shape_annotation}]"
-
                 # The array type depends on its subtype
                 if built_in_type == "bpy_prop_array":
-                    # The element type of a bpy_prop_array can vary between properties. As bpy_prop_array isn't Generic,
-                    # to indicate the element type, we use a fake Protocol:
-                    # Return a Union of a fake Protocol to give typed access to the elements and the annotated type
-                    return f"Union[prop_array_protocol[{name}], {annotated_type}]"
+                    # Array types should also include _generic_prop[type[<property type>]], e.g. bpy.types.FloatProperty
+                    # for Image.pixels or bpy.types.IntProperty for Image.size, but as it's the type itself, not an
+                    # instance, it's much less useful than with prop_collections
+                    # Return our fake generic bpy_prop_array type, annotated to indicate array shape and element
+                    # mutability
+                    return f"Annotated[_generic_prop_array[{name}], {array_shape_annotation}]"
                 else:
                     # If it's not a bpy_prop_array, it could be a mathutils.Vector, mathutils.Matrix, mathutils.Euler,
                     # mathutils.Quaternion or mathutils.Color
-                    return annotated_type
+                    # Annotate the type to indicate array shape and element mutability
+                    return f"Annotated[{built_in_type}, {array_shape_annotation}]"
 
     def get_argitem(arg, prev_ord, is_return=False):
         '''Helper function, that creates an argument definition subdictionary
@@ -1168,7 +1184,26 @@ def pyclass2predef(fw, module_name, type_name, value):
         @type_name (string): the name of the class
         @value (<class type>): the descriptor of this type
     '''
-    fw("class %s:\n" % type_name)
+    if value.__bases__ == (object,):
+        fw("class %s:\n" % type_name)
+    else:
+        # Overrides for some modules
+        module_overrides = {"bpy_types": "bpy.types"}
+        base_names = []
+        for base in value.__bases__:
+            module = module_overrides.get(base.__module__, base.__module__)
+            if module == 'builtins':
+                # Classes from C may say their module is 'builtins', check that against the actual 'builtins' module
+                if hasattr(builtins, base.__qualname__):
+                    # The class is an actual 'builtin' so don't include the module
+                    base_names.append(base.__qualname__)
+                else:
+                    # The class is some class from C, we will guess that the class belongs to the current module as
+                    # we don't have anything else to go on
+                    base_names.append(f"{module_name}.{base.__qualname__}")
+            else:
+                base_names.append(f"{module}.{base.__qualname__}")
+        fw(f"class {type_name}({', '.join(base_names)}):\n")
     if module_name in _EXTERNAL_MODULE_CLASS_RST:
         class_rst_dict = _EXTERNAL_MODULE_CLASS_RST[module_name]
         if type_name in class_rst_dict:
@@ -1276,9 +1311,25 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
 
     attributes_processed_as_modules = set()
 
-    for attribute in sorted(dir(module)):
-        if not attribute.startswith("_"):
-            value = getattr(module, attribute)
+    # __all__, when used, can help identify submodules that won't appear in dir(module) until they are imported for the
+    # first time
+    if hasattr(module, '__all__'):
+        all_attribute_names = set(module.__all__).union(dir(module))
+    else:
+        all_attribute_names = dir(module)
+
+    for attribute_name in sorted(all_attribute_names):
+        if not attribute_name.startswith("_"):
+            if not hasattr(module, attribute_name):
+                # It may be a module specified by __all__ that hasn't been loaded, try importing it
+                try:
+                    value = importlib.import_module(f"{relative_name}.{attribute_name}")
+                except Exception as e:
+                    print(f"Found attribute '{relative_name}.{attribute_name}' that could not be found on"
+                          f" '{relative_name}' and could not be loaded as a module due to: {e}")
+                    continue
+            else:
+                value = getattr(module, attribute_name)
 
             # Check if the attribute is a module
             if isinstance(value, types.ModuleType):
@@ -1287,17 +1338,17 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
                 if (
                         value.__name__.startswith(relative_name)
                         # msgbus is an exception to Blender's usual naming conventions for submodules
-                        or (relative_name == 'bpy' and value.__name__ == 'msgbus' and attribute == 'msgbus')
+                        or (relative_name == 'bpy' and value.__name__ == 'msgbus' and attribute_name == 'msgbus')
                         # Doesn't follow naming conventions and is also available as freestyle.chainingiterators.CF,
                         # freestyle.functions.CF and freestyle.shaders.CF, where it will be skipped
-                        or (relative_name == 'freestyle.utils' and attribute == 'ContextFunctions')
+                        or (relative_name == 'freestyle.utils' and attribute_name == 'ContextFunctions')
                 ):
-                    submodules[attribute] = value
+                    submodules[attribute_name] = value
                 else:
-                    print("Found possibly misplaced submodule '{}' as {}.{}. Skipping".format(value.__name__, relative_name, attribute))
-            elif relative_name in ATTRIBUTES_AS_SUBMODULES and attribute in ATTRIBUTES_AS_SUBMODULES[relative_name]:
-                submodules[attribute] = value
-                attributes_processed_as_modules.add(attribute)
+                    print("Found possibly misplaced submodule '{}' as {}.{}. Skipping".format(value.__name__, relative_name, attribute_name))
+            elif relative_name in ATTRIBUTES_AS_SUBMODULES and attribute_name in ATTRIBUTES_AS_SUBMODULES[relative_name]:
+                submodules[attribute_name] = value
+                attributes_processed_as_modules.add(attribute_name)
 
     if submodules:
         dir_path = os.path.join(BASEPATH, module_name)
@@ -1318,12 +1369,21 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     else:
         filepath = os.path.join(BASEPATH, module_name + ".py")
 
+    # If the module has a __file__ we can simply copy the corresponding file (or skip it, meant for when the user
+    # already has the file added as an external library and doesn't want it duplicated)
+    if hasattr(module, '__file__'):
+        if _ARG_SKIP_FILES:
+            print(f"- {true_module_name} already exists as a file. Skipping it.")
+        else:
+            print(f"- {true_module_name} already exists as a file. Copying the file")
+            # The module already exists as a file, copy it
+            shutil.copy(module.__file__, filepath)
+        return
 
     attribute_set = set()
 
     file = open(filepath, "w")
     fw = file.write
-    #fw = print
 
     #The description of this module:
     if module.__doc__:
@@ -1336,18 +1396,39 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     # It's too much work to figure out when we do/don't need to import bpy, so always do it unless we're bpy itself
     if relative_name != 'bpy':
         fw("import bpy  # added by pypredef_gen\n\n")
+    if relative_name != 'mathutils':
+        fw("import mathutils  # added by pypredef_gen\n\n")
 
+    # It may be possible to figure out the order to write each class in _freestyle so that no classes are referenced
+    # before they are defined, but it's significantly easier to add an import to itself and prepend all referenced
+    # types with "_freestyle."
+    if relative_name == "_freestyle":
+        fw("import _freestyle  # added by pypredef_gen\n\n")
+
+    # Extra typing imports for use with type aberrations
     fw("from typing import Union, Any  # added by pypredef_gen\n\n")
 
     if relative_name == 'bpy.props':
         # Extra imports and TypeVar creation
+        # sys is used in default arguments for 'min' and 'max' parameters
         fw("import sys"
            "\nfrom typing import TypeVar, Annotated  # added by pypredef_gen"
-           "\nT = TypeVar('T')  # added by pypredef_gen\n\n")
+           "\nT = TypeVar('T')  # added by pypredef_gen\n\n"
+           "class _FloatVectorTypeAmalgamation(bpy.types._generic_prop_array[float], mathutils.Vector,"
+           " mathutils.Matrix, mathutils.Euler, mathutils.Quaternion, mathutils.Color):"
+           "\n    \"\"\"Fake class added by pypredef_gen to work around PyCharm failing to correctly type annotations"
+           " that are set by a function that returns a Union of types\"\"\""
+           "\n    pass\n\n")
 
     # Add submodule imports to help with resolving names
-    for submodule_name in submodules:
-        fw("from . import {}\n".format(submodule_name))
+    if submodules:
+        submodule_lines = "__all__ = (\n"
+        for submodule_name in submodules:
+            submodule_lines += f"    '{submodule_name}',\n"
+        submodule_lines += ")\n"
+        fw(submodule_lines)
+    # for submodule_name in submodules:
+    #     fw("from . import {}\n".format(submodule_name))
 
     if is_fake_module and isinstance(module, bpy.types.bpy_struct):
         structs, _, _, _ = get_rna_info()
@@ -1426,14 +1507,24 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
         elif isinstance(value,type):
             classes.append((attribute, value))
 
-        elif isinstance(value, (bool, int, float, str, bytes)) or type(value) == tuple:
+        elif isinstance(value, (bool, int, float, str, bytes)):
             # constant, not much fun we can do here except to list it.
             # TODO, figure out some way to document these!
             fw("{0} = {1} # instance value \n\n".format(attribute, repr(value)))
 
-        # tuple subclasses may not print well, so convert to a regular tuple first
         elif isinstance(value, tuple):
-            fw("{0} = {1} # instance value: {2} \n\n".format(attribute, repr(tuple(value)), repr(value)))
+            # tuples are likely to contain useful, constant data, so we'll try to print them
+            printable_types = (bool, int, float, str, bytes)
+            if all(isinstance(v, printable_types) for v in value):
+                # tuple subclasses may not print well, so convert to a regular tuple first
+                if type(value) != tuple:
+                    fw("{0} = {1} # instance value: {2} \n\n".format(attribute, repr(tuple(value)), repr(value)))
+                else:
+                    fw("{0} = {1} # instance value \n\n".format(attribute, repr(value)))
+            else:
+                # It's difficult to reliably print other types
+                elements_text = " (elements omitted)" if value else ""
+                fw("{0} = {1}() # instance value{2} \n\n".format(attribute, type(value).__qualname__, elements_text))
 
         elif isinstance(value, list):
             elements_text = " (elements omitted)" if value else ""
@@ -1487,7 +1578,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
 
     # write collected classes now
     for (type_name, value) in classes:
-        pyclass2predef(fw, module_name, type_name, value)
+        pyclass2predef(fw, true_module_name, type_name, value)
 
     file.close()
 
@@ -1562,7 +1653,7 @@ def rna_struct2predef(ident, fw, descr, is_fake_module=False):
     '''
 
     if not is_fake_module:
-        print("class %s:\n" % descr.identifier)
+        print("class %s:" % descr.identifier)
         definition = doc2definition(rna2list(descr))
         write_indented_lines(ident,fw, definition["declaration"],False)
 
@@ -1718,6 +1809,8 @@ _RNA_PROPS = None
 def get_rna_info():
     global _RNA_STRUCTS, _RNA_FUNCS, _RNA_OPS, _RNA_PROPS
     if _RNA_STRUCTS is None or _RNA_FUNCS is None or _RNA_OPS is None or _RNA_PROPS is None:
+        # Note that by default, rna_info filters out some classes, such as most Operators, this can be changed by
+        # monkey-patching rna_info.rna_id_ignore before calling BuildRNAInfo()
         info = rna_info.BuildRNAInfo()
         _RNA_STRUCTS, _RNA_FUNCS, _RNA_OPS, _RNA_PROPS = info
         return info
@@ -1794,7 +1887,7 @@ def bpy2predef(BASEPATH, title, write_ops, write_types):
         fw("import bpy\n"
            "import mathutils\n")
         # Extra imports for type hints
-        fw("from typing import Union, Literal, Annotated, Sequence, TypeVar, Iterator, Protocol, Optional\n\n")
+        fw("from typing import Union, Literal, Annotated, Sequence, TypeVar, Iterator, Optional, Generic\n\n")
 
         #base structure
         bpy_base2predef("", fw)
@@ -1802,20 +1895,25 @@ def bpy2predef(BASEPATH, title, write_ops, write_types):
         # Some bpy_prop_collections have int keys and some have str keys, I don't know if there's a way to tell them
         # apart
         # Note that only the collections in bpy.data support get(key: tuple[str, Optional[str]])
-        fake_protocols = (
+        fake_generic_classes = (
             """
 # Prop collection keys can be either int or str
 prop_collection_key = Union[int, str]
 T = TypeVar('T')
 R = TypeVar('R', bounds='type')
 
-class prop_protocol(Protocol[R]):
-    \"\"\"Fake protocol class added by pypredef_gen\"\"\"
+class _generic_prop(Generic[R], bpy_prop):
+    \"\"\"Fake generic version of bpy_prop added by pypredef_gen\"\"\"
     rna_type: R
+    data: bpy.types.bpy_struct
+    id_data: Optional[bpy.types.ID]
 
-class prop_collection_protocol(Protocol[T]):
-    \"\"\"Fake protocol class added by pypredef_gen\"\"\"
-    def __getitem__(self, key) -> T: ...
+class _generic_prop_collection(Generic[T], bpy_prop_collection):
+    \"\"\"Fake generic version of bpy_prop_collection added by pypredef_gen\"\"\"
+    @overload
+    def __getitem__(self, key: prop_collection_key) -> T: ...
+    @overload
+    def __getitem__(self, s: slice) -> Sequence[T]: ...
     def __iter__(self) -> Iterator[T]: ...
     def find(self, key: str) -> int: ...
     def get(self, key: Union[str, tuple[str, Optional[str]]], default=None) -> T: ...
@@ -1823,8 +1921,8 @@ class prop_collection_protocol(Protocol[T]):
     def keys(self) -> list[str]: ...
     def values(self) -> list[T]: ...
 
-class prop_array_protocol(Protocol[T]):
-    \"\"\"Fake protocol class added by pypredef_gen\"\"\"
+class _generic_prop_array(Generic[T], bpy_prop_array):
+    \"\"\"Fake generic version of bpy_prop_array added by pypredef_gen\"\"\"
     @overload
     def __getitem__(self, key: int) -> T: ...
     @overload
@@ -1832,15 +1930,19 @@ class prop_array_protocol(Protocol[T]):
     def __getitem__(self, key) -> T: ...
     def __iter__(self) -> Iterator[T]: ...
 
+class _generic_prop_collection_idprop(_generic_prop_collection[T], bpy_prop_collection_idprop):
+    \"\"\"Fake generic version of bpy_prop_collection_idprop (not available from within Blender) added by pypredef_gen\"\"\"
+    pass
+
 """)
-        fw(fake_protocols)
+        fw(fake_generic_classes)
 
         #sort the type names:
         classes = list(structs.values())
         classes.sort(key=lambda cls: cls.identifier)
 
         for cls in classes:
-            # skip the operators!
+            # skip the operators! # Not sure why these are still here, since rna_info is supposed to filter them out
             if "_OT_" not in cls.identifier:
                 rna_struct2predef("", fw, cls)
         file.close()
@@ -1871,15 +1973,10 @@ def rna2predef(BASEPATH):
     # already been visited
     visited = set()
 
-    # These submodules don't get added to bpy_extras unless we pre-load them first, not sure why
-    if 'bpy_extras' in INCLUDE_MODULES:
-        importlib.import_module('bpy_extras.mesh_utils')
-        importlib.import_module('bpy_extras.image_utils')
-        importlib.import_module('bpy_extras.view3d_utils')
-
-    # And similarly, but for the gpu_extras module
-    if 'gpu_extras' in INCLUDE_MODULES:
-        importlib.import_module('gpu_extras.batch')
+    if 'freestyle' in INCLUDE_MODULES and '_freestyle' not in EXCLUDE_MODULES:
+        # The modules in freestyle import from the private, C-defined module _freestyle, include it if freestyle is
+        # included
+        INCLUDE_MODULES.append("_freestyle")
 
     for module_name in INCLUDE_MODULES:
         if module_name not in EXCLUDE_MODULES:
@@ -1914,6 +2011,7 @@ def load_external_rst(external_rst_dir):
 
 
 def main():
+    global _ARG_SKIP_FILES
     import bpy
     if 'bpy' not in dir():
         print("\nError, this script must run from inside blender")
@@ -1932,12 +2030,15 @@ def main():
         parser.add_argument("--external-rst-dir", dest="external_rst_dir", type=str, required=False,
                             help="Directory containing external .rst files to be loaded")
 
+        parser.add_argument("--skip-files", "-s", dest="skip_files", action='store_true', default=False, required=False,
+                            help="Skip modules that already exist as files instead of copying the files")
+
         args = parser.parse_args(argv)
 
         if args.external_rst_dir:
             load_external_rst(args.external_rst_dir)
 
-        import shutil
+        _ARG_SKIP_FILES = args.skip_files
 
         #these two strange lines below are just to make the debugging easier (to let it run many times from within Blender)
         import imp
