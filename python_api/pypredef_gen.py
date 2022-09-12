@@ -275,8 +275,8 @@ _BPY_PROPS_RETURN_HINTS = {
     'IntVectorProperty': "type[bpy.types._generic_prop_array[int]]",
     'StringProperty': "type[str]",
     # For these we add a T TypeVar and a T type hint to the 'type' parameter
-    'PointerProperty': "T",
-    'CollectionProperty': "type[bpy.types._generic_prop_collection_idprop[T]]",
+    'PointerProperty': "_T",
+    'CollectionProperty': "type[bpy.types._generic_prop_collection_idprop[_T]]",
 }
 
 _PROP_ARRAY_SUBTYPE_TO_CLASS = {
@@ -1134,7 +1134,7 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
         elif module_name == 'bpy.props' and hasattr(py_func, '__name__') and py_func.__name__ in _BPY_PROPS_RETURN_HINTS:
             # This is a hack to add in type hints to bpy.props, it relies on extra typing imports added into the module
             if py_func.__name__ == 'PointerProperty' or py_func.__name__ == 'CollectionProperty':
-                declaration = declaration.replace("type=None", "type: T = None")
+                declaration = declaration.replace("type=None", "type: _T = None")
             declaration = declaration.replace("):", ") -> " + _BPY_PROPS_RETURN_HINTS[py_func.__name__] + ":")
 
         write_indented_lines(ident, fw, declaration, False)
@@ -1413,7 +1413,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
         # sys is used in default arguments for 'min' and 'max' parameters
         fw("import sys"
            "\nfrom typing import TypeVar, Annotated  # added by pypredef_gen"
-           "\nT = TypeVar('T')  # added by pypredef_gen\n\n"
+           "\n_T = TypeVar('_T')  # added by pypredef_gen\n\n"
            "class _FloatVectorTypeAmalgamation(bpy.types._generic_prop_array[float], mathutils.Vector,"
            " mathutils.Matrix, mathutils.Euler, mathutils.Quaternion, mathutils.Color):"
            "\n    \"\"\"Fake class added by pypredef_gen to work around PyCharm failing to correctly type annotations"
@@ -1718,13 +1718,17 @@ def bpy_base2predef(ident, fw):
 
     def print_base_class(ident, base_class, available_in_blender=True):
         class_name = base_class.__name__
-        non_object_bases = [base.__name__ for base in base_class.__bases__ if base != object]
+        # Some classes exist, but aren't available, so we mark them as private by prefixing them with '_' and adding a
+        # mapping to TYPE_ABERRATIONS
+        modified_class_name = TYPE_ABERRATIONS.get(base_class.__name__, base_class.__name__)
+        non_object_bases = (base.__name__ for base in base_class.__bases__ if base != object)
+        non_object_bases = [TYPE_ABERRATIONS.get(name, name) for name in non_object_bases]
         if non_object_bases:
             fmt = ident + "class %s(%s):\n"
-            fw(fmt % (class_name, ", ".join(non_object_bases)))
+            fw(fmt % (modified_class_name, ", ".join(non_object_bases)))
         else:
             fmt = ident + "class %s:\n"
-            fw(fmt % class_name)
+            fw(fmt % modified_class_name)
         ident = ident + _IDENT
         fw(ident + "'''built-in base class for classes in bpy.types.\n\n")
         if not available_in_blender:
@@ -1742,37 +1746,52 @@ def bpy_base2predef(ident, fw):
 
         for key, descr in descr_items:
             if type(descr) == types.MethodDescriptorType:  # GetSetDescriptorType, GetSetDescriptorType's are not documented yet
-                py_descr2predef(ident, fw, descr, "bpy.types", class_name, key)
+                py_descr2predef(ident, fw, descr, "bpy.types", modified_class_name, key)
 
         for key, descr in descr_items:
             if type(descr) == types.GetSetDescriptorType:
-                py_descr2predef(ident, fw, descr, "bpy.types", class_name, key)
+                py_descr2predef(ident, fw, descr, "bpy.types", modified_class_name, key)
 
         fw("\n\n")
 
     available_base_classes = [
-        (bpy.types.bpy_struct, False),
-        (bpy.types.bpy_struct_meta_idprop, True),
-        (bpy.types.bpy_func, True),
+        bpy.types.bpy_struct,
+        bpy.types.bpy_struct_meta_idprop,
+        bpy.types.bpy_func,
         # Type for most user defined properties, adding is as a return type hint for bpy.props could be helpful
-        (bpy.types.bpy_prop, True),
+        bpy.types.bpy_prop,
         # Mesh.vertices, for example, doesn't actually return MeshVertices, it actually returns a
         # bpy.types.bpy_prop_collection whose .bl_rna returns <bpy_struct, Struct("MeshVertices") at [address]>
-        (bpy.types.bpy_prop_collection, True),
+        bpy.types.bpy_prop_collection,
         # Image.pixels for example
-        (bpy.types.bpy_prop_array, True),
+        bpy.types.bpy_prop_array,
     ]
-    for base_class, all_attributes in available_base_classes:
-        print_base_class(ident, base_class)
 
     not_available_base_classes = []
 
-    # CollectionProperty added to an ID type
-    bpy_prop_collection_idprop = bpy.types.bpy_prop_collection.__subclasses__()[0]
-    if bpy_prop_collection_idprop.__name__ == 'bpy_prop_collection_idprop':
-        not_available_base_classes.append((bpy_prop_collection_idprop, True))
+    # A CollectionProperty added to an ID type by an addon uses this type
+    collection_idprop_name = 'bpy_prop_collection_idprop'
+    # Currently it is not available in bpy.types, but it could be in the future
+    bpy_prop_collection_idprop_available = hasattr(bpy.types, collection_idprop_name)
+    if bpy_prop_collection_idprop_available:
+        # The type is available
+        available_base_classes.append(bpy.types.bpy_prop_collection_idprop)
+    else:
+        # The type is not available, get it from bpy_prop_collection's subclasses and prefix its name with '_'
+        prop_collection_subclasses = bpy.types.bpy_prop_collection.__subclasses__()
+        bpy_prop_collection_idprop = next(
+            (subclass for subclass in prop_collection_subclasses if subclass.__name__ == collection_idprop_name),
+            None
+        )
+        if bpy_prop_collection_idprop is not None:
+            # Add a mapping into the TYPE_ABERRATIONS to the prefixed name in-case something else uses this type
+            TYPE_ABERRATIONS[collection_idprop_name] = "_bpy_prop_collection_idprop"
+            not_available_base_classes.append(bpy_prop_collection_idprop)
 
-    for base_class, all_attributes in not_available_base_classes:
+    for base_class in available_base_classes:
+        print_base_class(ident, base_class)
+
+    for base_class in not_available_base_classes:
         print_base_class(ident, base_class, available_in_blender=False)
 
 def property2predef(ident, fw, module, name):
@@ -1895,42 +1914,43 @@ def bpy2predef(BASEPATH, title, write_ops, write_types):
         # Some bpy_prop_collections have int keys and some have str keys, I don't know if there's a way to tell them
         # apart
         # Note that only the collections in bpy.data support get(key: tuple[str, Optional[str]])
+        bpy_prop_collection_idprop_name = TYPE_ABERRATIONS.get("bpy_prop_collection_idprop", "bpy_prop_collection_idprop")
         fake_generic_classes = (
-            """
+            f"""
 # Prop collection keys can be either int or str
-prop_collection_key = Union[int, str]
-T = TypeVar('T')
-R = TypeVar('R', bounds='type')
+_prop_collection_key = Union[int, str]
+_T = TypeVar('_T')
+_R = TypeVar('_R', bounds='type')
 
-class _generic_prop(Generic[R], bpy_prop):
+class _generic_prop(Generic[_R], bpy_prop):
     \"\"\"Fake generic version of bpy_prop added by pypredef_gen\"\"\"
-    rna_type: R
+    rna_type: _R
     data: bpy.types.bpy_struct
     id_data: Optional[bpy.types.ID]
 
-class _generic_prop_collection(Generic[T], bpy_prop_collection):
+class _generic_prop_collection(Generic[_T], bpy_prop_collection):
     \"\"\"Fake generic version of bpy_prop_collection added by pypredef_gen\"\"\"
     @overload
-    def __getitem__(self, key: prop_collection_key) -> T: ...
+    def __getitem__(self, key: _prop_collection_key) -> _T: ...
     @overload
-    def __getitem__(self, s: slice) -> Sequence[T]: ...
-    def __iter__(self) -> Iterator[T]: ...
+    def __getitem__(self, s: slice) -> Sequence[_T]: ...
+    def __iter__(self) -> Iterator[_T]: ...
     def find(self, key: str) -> int: ...
-    def get(self, key: Union[str, tuple[str, Optional[str]]], default=None) -> T: ...
-    def items(self) -> list[tuple[prop_collection_key, T]]: ...
+    def get(self, key: Union[str, tuple[str, Optional[str]]], default=None) -> _T: ...
+    def items(self) -> list[tuple[_prop_collection_key, _T]]: ...
     def keys(self) -> list[str]: ...
-    def values(self) -> list[T]: ...
+    def values(self) -> list[_T]: ...
 
-class _generic_prop_array(Generic[T], bpy_prop_array):
+class _generic_prop_array(Generic[_T], bpy_prop_array):
     \"\"\"Fake generic version of bpy_prop_array added by pypredef_gen\"\"\"
     @overload
-    def __getitem__(self, key: int) -> T: ...
+    def __getitem__(self, key: int) -> _T: ...
     @overload
-    def __getitem__(self, s: slice) -> Sequence[T]: ...
-    def __getitem__(self, key) -> T: ...
-    def __iter__(self) -> Iterator[T]: ...
+    def __getitem__(self, s: slice) -> Sequence[_T]: ...
+    def __getitem__(self, key) -> _T: ...
+    def __iter__(self) -> Iterator[_T]: ...
 
-class _generic_prop_collection_idprop(_generic_prop_collection[T], bpy_prop_collection_idprop):
+class _generic_prop_collection_idprop(_generic_prop_collection[_T], {bpy_prop_collection_idprop_name}):
     \"\"\"Fake generic version of bpy_prop_collection_idprop (not available from within Blender) added by pypredef_gen\"\"\"
     pass
 
