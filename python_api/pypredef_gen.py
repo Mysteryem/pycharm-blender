@@ -430,10 +430,18 @@ def rst2list(doc):
         #                                                  with "<TypeName>"
         line = line.replace(":exc:","").replace("`","") #replace occurences of ":exc:`<TypeName>`"
         #                                                  with "<TypeName>"
-        if line.startswith(".. method::") or line.startswith(".. function::") or line.startswith(".. classmethod::"):
-            prototype = (line.split("::",1)[1]).lstrip(" ").rstrip(":")
+        if (
+                line.startswith(".. method::")
+                or line.startswith(".. function::")
+                or line.startswith(".. classmethod::")
+                or line.startswith(".. staticmethod::")
+        ):
+            split = line.split("::", 1)
+            prototype = (split[1]).lstrip(" ").rstrip(":")
+            function_type = split[0][3:]
             last_entry = "@def"
-            definition["@def"].setdefault("prototype",prototype)
+            definition["@def"].setdefault("prototype", prototype)
+            definition["@def"].setdefault("function_type", function_type)
         elif line.startswith(":arg"):
             expr = line.split(" ",2)
             name = expr[1].rstrip(":")
@@ -768,6 +776,7 @@ def rna2list(info):
         args_str = ", ".join(arg_strings)
         prototype = "{0}({1})".format(info.identifier, args_str)
         definition["@def"].setdefault("prototype",prototype)
+        definition["@def"].setdefault("hint", "function")
         definition["@def"]["description"] = info.description
         #append arguments:
         for arg in info.args:
@@ -780,6 +789,7 @@ def rna2list(info):
         args_str = ", ".join(prop.get_arg_default(force=False) for prop in info.args)
         prototype = "{0}({1})".format(info.func_name, args_str)
         definition["@def"].setdefault("prototype",prototype)
+        definition["@def"].setdefault("hint", "operator")
         # definition["@def"].setdefault("decorator","@staticmethod\n")
         if info.description and info.description != "(undocumented operator)":
             definition["@def"]["description"] = info.description
@@ -942,6 +952,8 @@ def doc2definition(doc,docstring_ident=_IDENT, module_name=None):
     _seealso = pop(definition, "@seealso")
 
     declaration = get(definition, "@def","prototype")
+    # function, method, classmethod or staticmethod
+    function_type = get(definition, "@def", "function_type")
     decorator = get(definition, "@def", "decorator")
     hint = get(definition, "@def", "hint")
 
@@ -1018,6 +1030,9 @@ def doc2definition(doc,docstring_ident=_IDENT, module_name=None):
 
     if rtype:
         result.setdefault("returns",rtype)
+
+    if function_type:
+        result.setdefault("function_type", function_type)
 
     return result
 
@@ -1131,9 +1146,14 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
     else:
         doc = py_func.__doc__
     definition = doc2definition(doc, module_name=module_name) #parse the eventual RST sphinx markup
-    is_class_method = type(py_func) == types.ClassMethodDescriptorType
+    function_type = definition.get("function_type")
+    is_class_method = type(py_func) == types.ClassMethodDescriptorType or function_type == 'classmethod'
     if is_class_method:
         fw(ident+"@classmethod\n")
+    is_static_method = function_type == 'staticmethod'
+    if is_static_method:
+        assert not is_class_method
+        fw(ident + "@staticmethod\n")
 
     if "declaration" in definition:
         declaration = definition["declaration"]
@@ -1148,7 +1168,7 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
                     declaration = declaration.replace("(", "(cls", 1)
                 else:
                     declaration = declaration.replace("(", "(cls, ", 1)
-            else:
+            elif not is_static_method:
                 if no_args:
                     declaration = declaration.replace("(", "(self", 1)
                 else:
