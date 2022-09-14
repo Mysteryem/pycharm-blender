@@ -326,13 +326,15 @@ import rna_info
 import bmesh
 import argparse
 import shutil
+from typing import Callable
 from collections import defaultdict
 
 # BMeshOpFunc type is not exposed directly by the current Blender API
 BMeshOpFuncType = type(bmesh.ops.split)
 NoneType = types.NoneType if hasattr(types, 'NoneType') else type(None)
 
-def write_indented_lines(ident, fn, text, strip=True):
+
+def write_indented_lines(ident: str, fn: Callable[[str], None], text: str, strip=True):
     ''' Helper function. Apply same indentation to all lines in a multilines text.
         Details:
         @ident (string): the required prefix (spaces)
@@ -343,7 +345,7 @@ def write_indented_lines(ident, fn, text, strip=True):
     '''
     if text is None:
         return
-    for l in text.split("\n"):
+    for l in text.splitlines():
         if strip:
             fn(ident + l.strip() + "\n")
         else:
