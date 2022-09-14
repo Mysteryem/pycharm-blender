@@ -1038,7 +1038,7 @@ def doc2definition(doc,docstring_ident=_IDENT, module_name=None):
 
     return result
 
-def pyfunc2predef(ident, fw, identifier, py_func, is_class=True):
+def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
     ''' Creates declaration of a function or class method
         Details:
         @ident (string): the required prefix (spaces)
@@ -1047,16 +1047,19 @@ def pyfunc2predef(ident, fw, identifier, py_func, is_class=True):
         @py_func (<py function>): the method, that is being described here
         @is_class (boolean): True, when it is a class member
     '''
+    is_class = attribute_defined_class is not None
+    function_defined_class = getattr(py_func, '__self__', attribute_defined_class)
     try:
         arguments = inspect.getfullargspec(py_func)
-        if len(arguments.args) == 0 and is_class:
-            fw(ident+"@staticmethod\n")
-        elif len(arguments.args)==0: #global function (is_class = false)
-            pass
-        elif arguments.args[0] == "cls" and is_class:
-            fw(ident+"@classmethod\n")
-        else: #global function
-            pass
+        if is_class:
+            if len(arguments.args) == 0:
+                fw(ident + "@staticmethod\n")
+            else:
+                static_attr = inspect.getattr_static(function_defined_class, identifier)
+                if isinstance(static_attr, staticmethod):
+                    fw(ident + "@staticmethod\n")
+                elif isinstance(static_attr, classmethod):
+                    fw(ident + "@classmethod\n")
 
         definition = doc2definition(py_func.__doc__) #parse the eventual RST sphinx markup
 
@@ -1091,11 +1094,13 @@ def pyfunc2predef(ident, fw, identifier, py_func, is_class=True):
             write_indented_lines(ident+_IDENT,fw,"pass",False)
 
         fw(ident + "\n")
+        return True
     except Exception as ex:
         msg = "#unable to describe the '%s' method due to internal error" % identifier
         print(msg + ":")
         print(ex)
         fw(ident + msg + "\n\n")
+        return False
 
 def py_descr2predef(ident, fw, descr, module_name, type_name, identifier):
     ''' Creates declaration of a function or class method
@@ -1314,8 +1319,10 @@ def pyclass2predef(fw, module_name, type_name, value):
     for key, descr in class_attributes:
         fw(f"{_IDENT}{key} = {repr(descr)}\n\n")
 
+    # pyfunc2predef can fail, in which case, only a comment is printed
+    py_wrapper_descriptors_written = False
     for key, descr in py_wrapper_descriptors:
-        pyfunc2predef(_IDENT, fw, key, descr)
+        py_wrapper_descriptors_written |= pyfunc2predef(_IDENT, fw, key, descr, attribute_defined_class=value)
 
     for key, descr in py_class_method_descriptors:
         py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
@@ -1323,8 +1330,10 @@ def pyclass2predef(fw, module_name, type_name, value):
     for key, descr in py_method_descriptors:
         py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
 
+    # pyfunc2predef can fail, in which case, only a comment is printed
+    py_functions_written = False
     for key, descr in py_functions:
-        pyfunc2predef(_IDENT, fw, key, descr)
+        py_functions_written |= pyfunc2predef(_IDENT, fw, key, descr, attribute_defined_class=value)
 
     for key, descr in py_getset_descriptors:
         py_descr2predef(_IDENT, fw, descr, module_name, type_name, key)
@@ -1338,9 +1347,10 @@ def pyclass2predef(fw, module_name, type_name, value):
     for key, descr in py_c_functions:
         py_c_func2predef(_IDENT, fw, module_name, type_name, key, descr, is_class=True)
 
-    all_lists = [py_class_method_descriptors, py_method_descriptors, py_functions, py_getset_descriptors, py_properties,
-                 class_attributes]
-    if not any(all_lists):
+    all_printed = [py_wrapper_descriptors_written, py_class_method_descriptors, py_method_descriptors,
+                   py_functions_written, py_getset_descriptors, py_properties, py_member_descriptors, py_c_functions,
+                   class_attributes]
+    if not any(all_printed):
         # Add "pass" if nothing was found for writing
         write_indented_lines(_IDENT, fw, "pass", False)
 
@@ -1510,7 +1520,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
         for key, descr in descr_items:
             # Write all the extra __<name>__ functions that are defined on this class
             if isinstance(descr, types.WrapperDescriptorType):
-                pyfunc2predef("", fw, key, descr)
+                pyfunc2predef("", fw, key, descr, attribute_defined_class=type(module))
 
         # write members of the module
         # only tested with PyStructs which are not exactly modules
@@ -1549,7 +1559,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     for attribute, value in all_attributes:
 
         if isinstance(value, (types.FunctionType, types.MethodType)):
-            pyfunc2predef("", fw, attribute, value, is_class=False)
+            pyfunc2predef("", fw, attribute, value)
 
         elif isinstance(value, bpy.types.bpy_func) and is_fake_module and isinstance(module, bpy.types.bpy_struct):
             # It should be possible to get the function info
@@ -1765,7 +1775,7 @@ def rna_function2predef(ident, fw, descr, is_bpy_op=False):
     fw("\n")
 
 
-def rna_struct2predef(ident, fw, descr, is_fake_module=False, module_name=None):
+def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=False, module_name=None):
     ''' Creates declaration of a bpy structure
         Details:
         @ident (string): the required prefix (spaces)
@@ -1802,7 +1812,7 @@ def rna_struct2predef(ident, fw, descr, is_fake_module=False, module_name=None):
 
     py_functions = descr.get_py_functions()
     for identifier, function in py_functions:
-        pyfunc2predef(ident, fw, identifier, function, is_class = True)
+        pyfunc2predef(ident, fw, identifier, function, attribute_defined_class=descr.py_class)
 
     if is_fake_module:
         all_attributes = set()
@@ -1864,10 +1874,10 @@ def bpy_base2predef(ident, fw):
         for key, descr in descr_items:
             # Write all the extra __<name>__ functions that are defined on this class
             if isinstance(descr, types.WrapperDescriptorType):
-                pyfunc2predef(ident, fw, key, descr)
+                pyfunc2predef(ident, fw, key, descr, attribute_defined_class=base_class)
 
         for key, descr in descr_items:
-            if type(descr) == types.MethodDescriptorType:  # GetSetDescriptorType, GetSetDescriptorType's are not documented yet
+            if type(descr) == types.MethodDescriptorType:
                 py_descr2predef(ident, fw, descr, "bpy.types", modified_class_name, key)
 
         for key, descr in descr_items:
