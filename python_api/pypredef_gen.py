@@ -167,7 +167,7 @@ ATTRIBUTES_AS_SUBMODULES = {
         "ocio",
         "oiio",
         "opensubdiv",
-        "openvb",
+        "openvdb",
         "sdl",
         "usd",
     }
@@ -182,7 +182,7 @@ DOCUMENT_ALL_ATTRIBUTES_MODULES = {
 
 _BPY_STRUCT_FAKE = "bpy_struct"
 _BPY_FULL_REBUILD = False
-_IDENT = "   "
+_IDENT = "    "
 _SPECIAL_HANDLING_MODULES = {"bpy.ops", "bpy.types"}
 _ARG_SKIP_FILES = False
 
@@ -735,7 +735,7 @@ def rna2list(info):
             type_name(prop_type, info.fixed_type is not None, array_dimensions, info.is_readonly, built_in_type,
                       collection_element_type))
         if info.is_readonly:
-            prototype = prototype + " # (read only)"
+            prototype = prototype + "  # (read only)"
 
         definition["@def"].setdefault("prototype",prototype)
         definition["@def"].setdefault("hint","property")
@@ -1478,7 +1478,10 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
            " mathutils.Matrix, mathutils.Euler, mathutils.Quaternion, mathutils.Color):"
            "\n    \"\"\"Fake class added by pypredef_gen to work around PyCharm failing to correctly type annotations"
            " that are set by a function that returns a Union of types\"\"\""
-           "\n    pass\n\n")
+           "\n    pass\n")
+
+    # Separator for end of module imports
+    fw("\n")
 
     # Add submodule imports to help with resolving names
     if submodules:
@@ -1504,7 +1507,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
         for key, descr in descr_items:
             # Write all the extra __<name>__ functions that are defined on this class
             if isinstance(descr, types.WrapperDescriptorType):
-                pyfunc2predef(ident, fw, key, descr)
+                pyfunc2predef("", fw, key, descr)
 
         # write members of the module
         # only tested with PyStructs which are not exactly modules
