@@ -326,6 +326,7 @@ import rna_info
 import bmesh
 import argparse
 import shutil
+from collections import defaultdict
 
 # BMeshOpFunc type is not exposed directly by the current Blender API
 BMeshOpFuncType = type(bmesh.ops.split)
@@ -568,12 +569,12 @@ def rna2list(info):
         else:
             if collection_element_type:
                 # Start with the fake generic class to give typed access of the collection elements
-                names = [f"_generic_prop_collection[{collection_element_type}]"]
+                names = [f"bpy.types._generic_prop_collection[{collection_element_type}]"]
 
                 if name:
                     # The collection has a base type that can be accessed through .rna_type, append the generic prop
                     # type that gives typed access to .rna_type
-                    names.append(f"_generic_prop[{name}]")
+                    names.append(f"bpy.types._generic_prop[{name}]")
                     # Append the base type itself
                     names.append(name)
 
@@ -610,7 +611,7 @@ def rna2list(info):
                     # instance, it's much less useful than with prop_collections
                     # Return our fake generic bpy_prop_array type, annotated to indicate array shape and element
                     # mutability
-                    return f"Annotated[_generic_prop_array[{name}], {array_shape_annotation}]"
+                    return f"Annotated[bpy.types._generic_prop_array[{name}], {array_shape_annotation}]"
                 else:
                     # If it's not a bpy_prop_array, it could be a mathutils.Vector, mathutils.Matrix, mathutils.Euler,
                     # mathutils.Quaternion or mathutils.Color
@@ -673,8 +674,8 @@ def rna2list(info):
     definition = {"@def":{"description":"", "ord":0}} #at the beginning: empty description of function definition
 
     if type(info) == rna_info.InfoStructRNA:
-        #base class of this struct:
-        base_id = getattr(info.base,"identifier",_BPY_STRUCT_FAKE)
+        # base class of this struct, if there is no RNA base, its base is bpy_struct
+        base_id = info.base.identifier if info.base else "bpy.types.bpy_struct"
         prototype = "class {0}({1}):".format(info.identifier, base_id)
         definition["@def"].setdefault("prototype",prototype)
         definition["@def"]["description"] = info.description
@@ -1431,7 +1432,9 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
 
     # If the module has a __file__ we can simply copy the corresponding file (or skip it, meant for when the user
     # already has the file added as an external library and doesn't want it duplicated)
-    if hasattr(module, '__file__'):
+    # We ignore 'bpy' as it specifically tries to import c-defined submodules from _bpy, the C-defined module, but we
+    # need it to set up our fake/stubbed modules
+    if hasattr(module, '__file__') and true_module_name != 'bpy':
         if _ARG_SKIP_FILES:
             print(f"- {true_module_name} already exists as a file. Skipping it.")
         else:
@@ -2080,10 +2083,39 @@ class _generic_prop_collection_idprop(_generic_prop_collection[_T], {bpy_prop_co
         classes = list(structs.values())
         classes.sort(key=lambda cls: cls.identifier)
 
-        for cls in classes:
-            # skip the operators! # Not sure why these are still here, since rna_info is supposed to filter them out
-            if "_OT_" not in cls.identifier:
-                rna_struct2predef("", fw, cls, module_name="bpy.types")
+        def get_top_level_base(struct) -> str:
+            base = struct.base
+            while base:
+                base_base = base.base
+                if base_base:
+                    base = base_base
+                else:
+                    return base.identifier
+            return "bpy_struct"
+
+        structs_by_base = defaultdict(list)
+        for struct in classes:
+            structs_by_base[get_top_level_base(struct)].append(struct)
+
+        for base_name, structs_list in structs_by_base.items():
+            base_module_name = "_types_" + base_name.lower()
+            fw(f"from .{base_module_name} import {', '.join(s.identifier for s in structs_list)}\n")
+
+            base_module_filepath = os.path.join(types_dirpath, f"{base_module_name}.py")
+            base_module_file = open(base_module_filepath, "w")
+            bm_fw = base_module_file.write
+            bm_fw(f'"""fake bpy.types submodule for {base_name} types"""\n\n')
+
+            bm_fw("from ... import bpy\n"
+               "from ... import mathutils\n")
+            # Extra imports for type hints
+            bm_fw("from typing import Union, Literal, Annotated, Sequence, TypeVar, Iterator, Optional, Generic, overload\n\n")
+
+            for struct in structs_list:
+                rna_struct2predef("", bm_fw, struct, module_name="bpy.types")
+
+            base_module_file.close()
+
         file.close()
 
 def rna2predef(BASEPATH):
