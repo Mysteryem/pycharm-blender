@@ -1193,10 +1193,17 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
 
         write_indented_lines(ident, fw, declaration, False)
     else:
+        # *argv, when we do not know about its arguments
+        arg_str = "(*argv)"
+        try:
+            # getfullargspec can parse .__text_signature__ if present
+            arg_str = inspect.formatargspec(*inspect.getfullargspec(py_func))
+        except TypeError:
+            pass
         if "returns" in definition:
-            fw(f"{ident}def {identifier}(*argv) -> {definition['returns']}:\n")
+            fw(f"{ident}def {identifier}{arg_str} -> {definition['returns']}:\n")
         else:
-            fw(f"{ident}def {identifier}(*argv):\n")#*argv, because we do not know about its arguments....
+            fw(f"{ident}def {identifier}{arg_str}:\n")
 
     if "docstring" in definition:
         write_indented_lines(ident,fw,definition["docstring"],False)
