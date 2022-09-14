@@ -1962,7 +1962,10 @@ def get_rna_info():
     if _RNA_STRUCTS is None or _RNA_FUNCS is None or _RNA_OPS is None or _RNA_PROPS is None:
         # Note that by default, rna_info filters out some classes, such as most Operators, this can be changed by
         # monkey-patching rna_info.rna_id_ignore before calling BuildRNAInfo()
+        old_func = rna_info.rna_id_ignore
+        rna_info.rna_id_ignore = lambda rna_id: rna_id == "rna_type" or "_OT_" in rna_id
         info = rna_info.BuildRNAInfo()
+        rna_info.rna_id_ignore = old_func
         _RNA_STRUCTS, _RNA_FUNCS, _RNA_OPS, _RNA_PROPS = info
         return info
     return _RNA_STRUCTS, _RNA_FUNCS, _RNA_OPS, _RNA_PROPS
