@@ -197,63 +197,66 @@ TYPE_ABERRATIONS = {
         "Quaternion": "mathutils.Quaternion",
         "Color"     : "mathutils.Color",
         "Euler"     : "mathutils.Euler",
-        "subclass of bpy_struct" : "bpy_struct",
-        "subclass of bpy.types.bpy_struct" : "bpy_struct",
-        "bpy.types.FCurve or list if index is -1 with an array property." : "bpy.types.FCurve",
-        "float triplet": "(float, float, float)",
-        "string in ['XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX']" : "str #in ['XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX']",
-        "tuple of 2 floats":"(float, float)",
-        "mathutils.Vector's" : "mathutils.Vector",
-        "list of mathutils.Vector's":"[mathutils.Vector]",
-        "tuple, pair of floats":"(float, float)",
-        "tuple of mathutils.Vector's":"(mathutils.Vector, mathutils.Vector)",
-        "mathutils.Vector or None":"mathutils.Vector",
-        "list of strigs":"[str]",
-        "list of strings":"[str]",
-        "FCurve or list if index is -1 with an array property":"FCurve",
-        "list of key, value tuples": ("[(str, types.%s)]" % _BPY_STRUCT_FAKE),
+        "subclass of bpy_struct": "bpy.types.bpy_struct",
+        "subclass of bpy.types.bpy_struct": "bpy.types.bpy_struct",
+        "bpy.types.FCurve or list if index is -1 with an array property.": "bpy.types.FCurve",
+        "float triplet": "tuple[float, float, float]",
+        "string in ['XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX']": "Literal['XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX']",
+        "tuple of 2 floats": "tuple[float, float]",
+        "mathutils.Vector's": "mathutils.Vector",
+        "list of mathutils.Vector's": "list[mathutils.Vector]",
+        "tuple, pair of floats": "tuple[float, float]",
+        "tuple of mathutils.Vector's": "tuple[mathutils.Vector, mathutils.Vector]",
+        "mathutils.Vector or None": "mathutils.Vector",
+        "list of strigs": "list[str]",
+        "list of strings": "list[str]",
+        "FCurve or list if index is -1 with an array property": "FCurve",
+        "list of key, value tuples": "list[tuple[str, bpy.types.bpy_struct]]",
         "Undefined (it may change).": "None  # Undefined (it may change)",
         "Matrix Access": "mathutils.MatrixAccess",  # MatrixAccess type is not exposed in the Python API
         "(Vector, float) pair": "(mathutils.Vector, float)",
         "Vector of size 3": "mathutils.Vector  # Size of 3",
         "(Quaternion, float) pair": "(mathutils.Quaternion, float)",
         "Vector or float when 2D vectors are used": "Union[mathutils.Vector, float]  # float when 2D vectors are used",
-        "list of tuples": "[tuple]",
-        "list of ints": "[int]",
-        "list of floats": "[float]",
-        "BMElemSeq of BMFace": "BMElemSeq  # of BMFace",
-        "BMElemSeq of BMLoop": "BMElemSeq  # of BMLoop",
-        "BMElemSeq of BMVert": "BMElemSeq  # of BMVert",
-        "BMElemSeq of BMEdge": "BMElemSeq  # of BMEdge",
-        "list of BMLoop tuples": "[(BMLoop, BMLoop, BMLoop)]",
+        "list of tuples": "list[tuple]",
+        "list of ints": "list[int]",
+        "list of floats": "list[float]",
+        "BMElemSeq of BMFace": "bmesh.types.BMElemSeq  # of BMFace",
+        "BMElemSeq of BMLoop": "bmesh.types.BMElemSeq  # of BMLoop",
+        "BMElemSeq of BMVert": "bmesh.types.BMElemSeq  # of BMVert",
+        "BMElemSeq of BMEdge": "bmesh.types.BMElemSeq  # of BMEdge",
+        "list of BMLoop tuples": "list[tuple[bmesh.types.BMLoop, bmesh.types.BMLoop, bmesh.types.BMLoop]]",
         "(bmesh.types.BMFace, bmesh.types.BMLoop) pair": "(bmesh.types.BMFace, bmesh.types.BMLoop)",
         "tuple of (bmesh.types.BMFace)": "tuple[(bmesh.types.BMFace), ...]",
         "tuple of bmesh.types.BMVert": "tuple[bmesh.types.BMVert, ...]",
         "tuple of strings": "tuple[str, ...]",
         "tuple pair of functions": "(typing.Callable, typing.Callable)",
         "Interface0D or one of its subclasses.": "Interface0D",
-        "List of FEdge objects": "[FEdge]",
-        "List of SVertex objects": "[SVertex]",
-        "list of mathutils.Vector objects": "[mathutils.Vector]",
-        "List of ViewEdge objects": "[ViewEdge]",
+        "List of FEdge objects": "list[_freestyle.FEdge]",
+        "List of SVertex objects": "list[_freestyle.SVertex]",
+        "list of mathutils.Vector objects": "list[mathutils.Vector]",
+        "List of ViewEdge objects": "list[_freestyle.ViewEdge]",
         "str, or None if the ViewShape is not part of a library": "str  # None if the ViewShape is not part of a library ",
-        "List of ViewVertex objects": "[ViewVertex]",
-        "pair of floats": "(float, float)",
-        "pair of ints": "(int, int)",
+        "List of ViewVertex objects": "list[_freestyle.ViewVertex]",
+        "pair of floats": "tuple[float, float]",
+        "pair of ints": "tuple[int, int]",
         "(list of mathutils.Vector, list of (int, int), list of list of int, list of list of int, list of list of int, list of list of int)":
-            "([mathutils.Vector], [(int, int)], [[int]], [[int]], [[int]], [[int]])",
+            "tuple[[mathutils.Vector], [(int, int)], [[int]], [[int]], [[int]], [[int]]]",
         "A tuple pair containing mathutils.Vector or None": "Union[(mathutils.Vector, mathutils.Vector), None]",
         "tuple pair of mathutils.Vector or None if the intersection can't be calculated":
             "Union[(mathutils.Vector, mathutils.Vector), None]  # None if the intersection can't be calculated",
         "tuple of mathutils.Vector's or None when there is no intersection":
             "Union[(mathutils.Vector, mathutils.Vector), None]  # None when there is no intersection",
-        "pair of lists": "(list, list)",
+        "pair of lists": "tuple[list, list]",
         "list of four floats, list of four mathutils.Vector types": "list[list[float], list[mathutils.Vector]]  # list"
                                                                     " of four floats, list of four mathutils.Vector"
                                                                     " types",
-        "BMVert, BMEdge or BMFace": "Union[BMVert, BMEdge, BMFace]",
+        "BMVert, BMEdge or BMFace": "Union[bmesh.types.BMVert, bmesh.types.BMEdge, bmesh.types.BMFace]",
         "dict with string keys": "dict[str, Any]",
         "int or float": "Union[int, float]",
+        "(Vector, Quaternion, Vector)": "tuple[mathutils.Vector, mathutils.Quaternion, mathutils.Vector]",
+        "ViewEdge or None": "Optional[_freestyle.ViewEdge]",
+        "BMVert or None": "Optional[bmesh.types.BMVert]"
 }
 
 IGNORED_CLASS_KEYS = {
@@ -859,7 +862,7 @@ def rst_module_to_rst_dict(file_contents: str):
     return module_name, module_rst, function_rst_dict, class_rst_dict
 
 
-def doc2definition(doc,docstring_ident=_IDENT):
+def doc2definition(doc,docstring_ident=_IDENT, module_name=None):
     '''Method converts given doctext into declaration and docstring comment
     Details:
     @doc (string or list) - the documentation text of the member (preferably in sphinx RST syntax)
@@ -913,6 +916,13 @@ def doc2definition(doc,docstring_ident=_IDENT):
         else:
             return None
 
+    def guess_prefixed_type(type_name):
+        if module_name and type_name.isalnum() and not hasattr(builtins, type_name):
+            return f"{module_name}.{type_name}"
+        else:
+            # Most likely already contains the correct module
+            return type_name
+
     if doc is None:
         return {"docstring" : docstring_ident + "\n"}
 
@@ -938,19 +948,32 @@ def doc2definition(doc,docstring_ident=_IDENT):
     if declaration:
         decorator = decorator if decorator else ""
         if hint in ("property", "class"):
+            if hint == "class":
+                # If class has bases, try to guess the prefixed name for each base
+                bases_start = declaration.find('(')
+                if bases_start != -1:
+                    bases_end = declaration.rfind(')')
+                    if bases_end != -1 and bases_end > bases_start:
+                        bases = declaration[bases_start+1:bases_end].split(',')
+                        bases = map(guess_prefixed_type, bases)
+                        declaration = declaration[:bases_start+1] + ", ".join(bases) + declaration[bases_end:]
             pass #no prefix needed
         else:
             if rtype:
                 # Some type aberrations have comments, which will need to go after the ":" at the end
                 comment_start = rtype.find("#")
                 if comment_start != -1:
-                    rtype_stripped = rtype[:comment_start].rstrip()
+                    rtype_stripped = rtype[:comment_start].strip()
+                    rtype_stripped = guess_prefixed_type(rtype_stripped)
                     rtype_comment = rtype[comment_start:]
                     declaration = decorator + "def " + declaration + " -> " + rtype_stripped + ":  " + rtype_comment
                 else:
+                    rtype = guess_prefixed_type(rtype.strip())
                     declaration = decorator + "def " + declaration + " -> " + rtype + ":"
             else:
                 declaration = decorator + "def " + declaration + ":"
+    elif rtype:
+        rtype = guess_prefixed_type(rtype)
 
 
     _def = pop(definition, "@def") #remove the definition from the list....
@@ -1046,7 +1069,7 @@ def pyfunc2predef(ident, fw, identifier, py_func, is_class=True):
             write_indented_lines(ident,fw,definition["docstring"],False)
 
         if "returns" in definition:
-            write_indented_lines(ident+_IDENT,fw,"return " + definition["returns"],False)
+            write_indented_lines(ident+_IDENT, fw, "return ...", False)
         else:
             write_indented_lines(ident+_IDENT,fw,"pass",False)
 
@@ -1072,7 +1095,7 @@ def py_descr2predef(ident, fw, descr, module_name, type_name, identifier):
         return
 
     if type(descr) in (types.GetSetDescriptorType, types.MemberDescriptorType): #an attribute of the module or class
-        definition = doc2definition(descr.__doc__,"") #parse the eventual RST sphinx markup
+        definition = doc2definition(descr.__doc__,"", module_name=module_name) #parse the eventual RST sphinx markup
         if "returns" in definition:
             returns = definition["returns"]
         else:
@@ -1107,7 +1130,7 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
             doc = py_func.__doc__
     else:
         doc = py_func.__doc__
-    definition = doc2definition(doc) #parse the eventual RST sphinx markup
+    definition = doc2definition(doc, module_name=module_name) #parse the eventual RST sphinx markup
     is_class_method = type(py_func) == types.ClassMethodDescriptorType
     if is_class_method:
         fw(ident+"@classmethod\n")
@@ -1133,19 +1156,25 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
 
         elif module_name == 'bpy.props' and hasattr(py_func, '__name__') and py_func.__name__ in _BPY_PROPS_RETURN_HINTS:
             # This is a hack to add in type hints to bpy.props, it relies on extra typing imports added into the module
-            if py_func.__name__ == 'PointerProperty' or py_func.__name__ == 'CollectionProperty':
+            if py_func.__name__ == 'PointerProperty':
                 declaration = declaration.replace("type=None", "type: _T = None")
+            elif py_func.__name__ == 'CollectionProperty':
+                declaration = declaration.replace("type=None", "type: type[_T] = None")
             declaration = declaration.replace("):", ") -> " + _BPY_PROPS_RETURN_HINTS[py_func.__name__] + ":")
 
         write_indented_lines(ident, fw, declaration, False)
     else:
-        fw(ident + "def %s(*argv):\n" % identifier)#*argv, because we do not know about its arguments....
+        if "returns" in definition:
+            fw(f"{ident}def {identifier}(*argv) -> {definition['returns']}:\n")
+        else:
+            fw(f"{ident}def {identifier}(*argv):\n")#*argv, because we do not know about its arguments....
 
     if "docstring" in definition:
         write_indented_lines(ident,fw,definition["docstring"],False)
 
     if "returns" in definition:
-        write_indented_lines(ident+_IDENT,fw,"return " + definition["returns"],False)
+        # write_indented_lines(ident+_IDENT,fw,"return " + definition["returns"],False)
+        write_indented_lines(ident+_IDENT,fw,"return ...", False)
     else:
         write_indented_lines(ident+_IDENT,fw,"pass",False)
 
@@ -1176,6 +1205,24 @@ def pyprop2predef(ident, fw, identifier, py_prop):
 
     fw(ident + "\n")
 
+
+def guess_prefixed_class_name(module_name, clazz):
+    # Overrides for some modules
+    module_overrides = {"bpy_types": "bpy.types"}
+    module = module_overrides.get(clazz.__module__, clazz.__module__)
+    if module == 'builtins':
+        # Classes from C may say their module is 'builtins', check that against the actual 'builtins' module
+        if hasattr(builtins, clazz.__qualname__):
+            # The class is an actual 'builtin' so don't include the module
+            return clazz.__qualname__
+        else:
+            # The class is some class from C, we will guess that the class belongs to the current module as
+            # we don't have anything else to go on
+            return f"{module_name}.{clazz.__qualname__}"
+    else:
+        return f"{module}.{clazz.__qualname__}"
+
+
 def pyclass2predef(fw, module_name, type_name, value):
     ''' Creates declaration of a class
         Details:
@@ -1187,22 +1234,7 @@ def pyclass2predef(fw, module_name, type_name, value):
     if value.__bases__ == (object,):
         fw("class %s:\n" % type_name)
     else:
-        # Overrides for some modules
-        module_overrides = {"bpy_types": "bpy.types"}
-        base_names = []
-        for base in value.__bases__:
-            module = module_overrides.get(base.__module__, base.__module__)
-            if module == 'builtins':
-                # Classes from C may say their module is 'builtins', check that against the actual 'builtins' module
-                if hasattr(builtins, base.__qualname__):
-                    # The class is an actual 'builtin' so don't include the module
-                    base_names.append(base.__qualname__)
-                else:
-                    # The class is some class from C, we will guess that the class belongs to the current module as
-                    # we don't have anything else to go on
-                    base_names.append(f"{module_name}.{base.__qualname__}")
-            else:
-                base_names.append(f"{module}.{base.__qualname__}")
+        base_names = [guess_prefixed_class_name(module_name, base) for base in value.__bases__]
         fw(f"class {type_name}({', '.join(base_names)}):\n")
     if module_name in _EXTERNAL_MODULE_CLASS_RST:
         class_rst_dict = _EXTERNAL_MODULE_CLASS_RST[module_name]
@@ -1212,7 +1244,7 @@ def pyclass2predef(fw, module_name, type_name, value):
             doc = value.__doc__
     else:
         doc = value.__doc__
-    definition = doc2definition(doc) #parse the eventual RST sphinx markup
+    definition = doc2definition(doc, module_name=module_name) #parse the eventual RST sphinx markup
     if "docstring" in definition:
         write_indented_lines("", fw, definition["docstring"], False)
 
@@ -1388,7 +1420,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     #The description of this module:
     if module.__doc__:
         title = title + "\n" + module.__doc__
-    definition = doc2definition(title,"") #skip the leading spaces at the first line...
+    definition = doc2definition(title,"", module_name=true_module_name) #skip the leading spaces at the first line...
     fw(definition["docstring"])
     fw("\n\n")
 
@@ -1405,8 +1437,8 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     if relative_name == "_freestyle":
         fw("import _freestyle  # added by pypredef_gen\n\n")
 
-    # Extra typing imports for use with type aberrations
-    fw("from typing import Union, Any  # added by pypredef_gen\n\n")
+    # Extra typing imports needed for some types and type aberrations
+    fw("from typing import Union, Optional, Literal, Any  # added by pypredef_gen\n")
 
     if relative_name == 'bpy.props':
         # Extra imports and TypeVar creation
@@ -1436,7 +1468,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
         fw("# Start of attributes from type #\n")
         if key in structs:
             cls = structs[key]
-            attribute_set.update(rna_struct2predef("", fw, cls, is_fake_module=True))
+            attribute_set.update(rna_struct2predef("", fw, cls, is_fake_module=True, module_name=relative_name))
         fw("# End of attributes from type #\n\n")
 
         descr_items = [(key, descr) for key, descr in sorted(type(module).__dict__.items()) if key not in IGNORED_CLASS_KEYS]
@@ -1636,14 +1668,15 @@ def rna_function2predef(ident, fw, descr, is_bpy_op=False):
         write_indented_lines(ident, fw, definition["docstring"], False)
 
     if "returns" in definition:
-        write_indented_lines(ident+_IDENT,fw,"return " + definition["returns"],False)
+        # The return type is hinted by the declaration. Since this is a stub, return ...
+        write_indented_lines(ident+_IDENT, fw, "return ...", False)
     else:
-        write_indented_lines(ident+_IDENT,fw,"pass",False)
+        write_indented_lines(ident+_IDENT, fw, "pass", False)
 
     fw("\n")
 
 
-def rna_struct2predef(ident, fw, descr, is_fake_module=False):
+def rna_struct2predef(ident, fw, descr, is_fake_module=False, module_name=None):
     ''' Creates declaration of a bpy structure
         Details:
         @ident (string): the required prefix (spaces)
@@ -1654,7 +1687,7 @@ def rna_struct2predef(ident, fw, descr, is_fake_module=False):
 
     if not is_fake_module:
         print("class %s:" % descr.identifier)
-        definition = doc2definition(rna2list(descr))
+        definition = doc2definition(rna2list(descr), module_name=module_name)
         write_indented_lines(ident,fw, definition["declaration"],False)
 
         if "docstring" in definition:
@@ -1906,7 +1939,7 @@ def bpy2predef(BASEPATH, title, write_ops, write_types):
         fw("import bpy\n"
            "import mathutils\n")
         # Extra imports for type hints
-        fw("from typing import Union, Literal, Annotated, Sequence, TypeVar, Iterator, Optional, Generic\n\n")
+        fw("from typing import Union, Literal, Annotated, Sequence, TypeVar, Iterator, Optional, Generic, overload\n\n")
 
         #base structure
         bpy_base2predef("", fw)
@@ -1964,7 +1997,7 @@ class _generic_prop_collection_idprop(_generic_prop_collection[_T], {bpy_prop_co
         for cls in classes:
             # skip the operators! # Not sure why these are still here, since rna_info is supposed to filter them out
             if "_OT_" not in cls.identifier:
-                rna_struct2predef("", fw, cls)
+                rna_struct2predef("", fw, cls, module_name="bpy.types")
         file.close()
 
 def rna2predef(BASEPATH):
