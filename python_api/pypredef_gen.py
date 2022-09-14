@@ -329,6 +329,7 @@ import shutil
 
 # BMeshOpFunc type is not exposed directly by the current Blender API
 BMeshOpFuncType = type(bmesh.ops.split)
+NoneType = types.NoneType if hasattr(types, 'NoneType') else type(None)
 
 def write_indented_lines(ident, fn, text, strip=True):
     ''' Helper function. Apply same indentation to all lines in a multilines text.
@@ -1279,6 +1280,7 @@ def pyclass2predef(fw, module_name, type_name, value):
     py_properties = []
     py_member_descriptors = []
     py_c_functions = []
+    class_attributes = []
     for key, descr in descr_items:
         # Not sure if this is correct to do, but get the corresponding function when we get a staticmethod or
         # classmethod object
@@ -1303,8 +1305,13 @@ def pyclass2predef(fw, module_name, type_name, value):
             py_c_functions.append((key, descr))
         elif isinstance(descr, types.WrapperDescriptorType):
             py_wrapper_descriptors.append((key, descr))
+        elif isinstance(descr, (bool, int, float, str, bytes, NoneType)):
+            class_attributes.append((key, descr))
         else:
             print("\tnot documenting {}.{} of type {}".format(type_name, key, type(descr)))
+
+    for key, descr in class_attributes:
+        fw(f"{_IDENT}{key} = {repr(descr)}\n\n")
 
     for key, descr in py_wrapper_descriptors:
         pyfunc2predef(_IDENT, fw, key, descr)
@@ -1330,7 +1337,8 @@ def pyclass2predef(fw, module_name, type_name, value):
     for key, descr in py_c_functions:
         py_c_func2predef(_IDENT, fw, module_name, type_name, key, descr, is_class=True)
 
-    all_lists = [py_class_method_descriptors, py_method_descriptors, py_functions, py_getset_descriptors, py_properties]
+    all_lists = [py_class_method_descriptors, py_method_descriptors, py_functions, py_getset_descriptors, py_properties,
+                 class_attributes]
     if not any(all_lists):
         # Add "pass" if nothing was found for writing
         write_indented_lines(_IDENT, fw, "pass", False)
@@ -1566,11 +1574,66 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
 
         elif isinstance(value, tuple):
             # tuples are likely to contain useful, constant data, so we'll try to print them
-            printable_types = (bool, int, float, str, bytes)
+            printable_types = (bool, int, float, str, bytes, NoneType)
             if all(isinstance(v, printable_types) for v in value):
-                # tuple subclasses may not print well, so convert to a regular tuple first
                 if type(value) != tuple:
-                    fw("{0} = {1} # instance value: {2} \n\n".format(attribute, repr(tuple(value)), repr(value)))
+                    printed_tuple_subtype = False
+                    tuple_subtype = type(value)
+                    # Blender uses some c-defined 'named tuples' called PyStructSequences which we can represent as
+                    # actual namedtuple instances
+                    if (
+                            hasattr(tuple_subtype, 'n_sequence_fields')
+                            and hasattr(tuple_subtype, 'n_fields')
+                            and hasattr(tuple_subtype, 'n_unnamed_fields')
+                            and tuple_subtype.n_unnamed_fields == 0  # Not supporting a mix of named and unnamed fields
+                    ):
+                        # Blender uses some c-defined tuples (StructSequence) that are similar to namedtuples, attempt
+                        # to reformat it as a namedtuple
+                        # Find all attributes of the class that are MemberDescriptors, these appear to be in the correct
+                        # order, but we'll check anyway
+                        descriptor_names = []
+                        for tuple_attribute_name, tuple_attribute in tuple_subtype.__dict__.items():
+                            if isinstance(tuple_attribute, types.MemberDescriptorType):
+                                descriptor_names.append(tuple_attribute_name)
+                        # Initial check that the length of the tuple matches the length of the descriptor names
+                        if len(value) == len(descriptor_names):
+                            tuple_values_from_descriptor = []
+                            for tuple_attribute_name in descriptor_names:
+                                tuple_values_from_descriptor.append(getattr(value, tuple_attribute_name))
+                            # Check that the values from descriptors are the same as those from converting to a tuple
+                            if tuple(tuple_values_from_descriptor) == tuple(value):
+                                # We're good to
+                                full_subclass_name = f"{tuple_subtype.__module__}.{tuple_subtype.__name__}"
+                                class_args = ', '.join(descriptor_names)
+                                instance_args = ', '.join(repr(v) for v in value)
+                                fw(
+                                    "from collections import namedtuple\n"
+                                    "# Actual type is a C defined PyStructSequence. Converted to a namedtuple by pypredef_gen\n"
+                                    f"{attribute} = namedtuple('{full_subclass_name}', '{class_args}')({instance_args})\n"
+                                    "del namedtuple\n\n"
+                                )
+                                printed_tuple_subtype = True
+                    # Supporting real namedtuples would be fairly similar
+                    # elif (
+                    #         hasattr(tuple_subtype, '_asdict')
+                    #         and hasattr(tuple_subtype, '_fields')
+                    #         and tuple_subtype.__bases__ == (tuple,)
+                    # ):
+                    #     # Most likely a namedtuple class
+                    #     namedtuple_name = tuple_subtype.__name__
+                    #     class_args = ', '.join(tuple_subtype._fields)
+                    #     instance_args = ', '.join(repr(v) for v in value)
+                    #     fw(
+                    #         "from collections import namedtuple\n"
+                    #         "# Actual type is likely a namedtuple"
+                    #         f"{attribute} = namedtuple('{namedtuple_name}', '{class_args}')({instance_args})\n"
+                    #         "del namedtuple\n\n"
+                    #     )
+                    #     printed_tuple_subtype = True
+                    if not printed_tuple_subtype:
+                        # Other tuple subclasses may not be printable as-is, so create a regular tuple from it and print
+                        # that instead
+                        fw("{0} = {1} # instance value: {2} \n\n".format(attribute, repr(tuple(value)), repr(value)))
                 else:
                     fw("{0} = {1} # instance value \n\n".format(attribute, repr(value)))
             else:
