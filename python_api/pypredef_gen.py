@@ -1474,18 +1474,28 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     fw(definition["docstring"])
     fw("\n\n")
 
-    # Add a bpy import so that any bpy.types.<type> can be resolved
-    # It's too much work to figure out when we do/don't need to import bpy, so always do it unless we're bpy itself
-    if relative_name != 'bpy':
-        fw("import bpy  # added by pypredef_gen\n\n")
-    if relative_name != 'mathutils':
-        fw("import mathutils  # added by pypredef_gen\n\n")
+    # Figure out import depth needed for relative imports to top-level modules
+    depth = 0
+    if submodules:
+        depth += 1 + relative_name.count('.')
+    else:
+        depth += relative_name.count('.')
+    if depth > 0:
+        import_str = f"from .{'.' * depth} import"
+    else:
+        import_str = "import"
 
-    # It may be possible to figure out the order to write each class in _freestyle so that no classes are referenced
-    # before they are defined, but it's significantly easier to add an import to itself and prepend all referenced
-    # types with "_freestyle."
-    if relative_name == "_freestyle":
-        fw("import _freestyle  # added by pypredef_gen\n\n")
+    fw(f"import numpy  # added by pypredef_gen\n")
+    # Classes can often be referenced before they are defined so their names are usually prefixed with the module they
+    # belong to, for this to work, each module needs to import their top-level module
+    top_level_module = relative_name.split('.', maxsplit=1)[0]
+    fw(f"{import_str} {top_level_module}  # added by pypredef_gen\n")
+    # It's too much work to figure out when we do/don't need to import bpy and mathutils, so always do it unless it's
+    # the top_level_module we just imported
+    if top_level_module != 'bpy':
+        fw(f"{import_str} bpy  # added by pypredef_gen\n")
+    if top_level_module != 'mathutils':
+        fw(f"{import_str} mathutils  # added by pypredef_gen\n")
 
     # Extra typing imports needed for some types and type aberrations
     fw("from typing import Union, Optional, Literal, Any  # added by pypredef_gen\n")
@@ -1506,14 +1516,10 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     fw("\n")
 
     # Add submodule imports to help with resolving names
+    for submodule_name in submodules:
+        fw("from . import {}\n".format(submodule_name))
     if submodules:
-        submodule_lines = "__all__ = (\n"
-        for submodule_name in submodules:
-            submodule_lines += f"    '{submodule_name}',\n"
-        submodule_lines += ")\n"
-        fw(submodule_lines)
-    # for submodule_name in submodules:
-    #     fw("from . import {}\n".format(submodule_name))
+        fw("\n")
 
     if is_fake_module and isinstance(module, bpy.types.bpy_struct):
         structs, _, _, _ = get_rna_info()
@@ -2047,8 +2053,8 @@ def bpy2predef(BASEPATH, title, write_ops, write_types):
         fw = file.write
         fw("'''bpy.types submodule'''\n\n")
 
-        fw("import bpy\n"
-           "import mathutils\n")
+        fw("from ... import bpy\n"
+           "from ... import mathutils\n")
         # Extra imports for type hints
         fw("from typing import Union, Literal, Annotated, Sequence, TypeVar, Iterator, Optional, Generic, overload\n\n")
 
