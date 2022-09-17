@@ -331,6 +331,79 @@ def write_indented_lines(ident: str, fn: Callable[[str], None], text: str, strip
         else:
             fn(ident + l + "\n")
 
+
+def is_tuple_pystructsequence(value):
+    """Return whether a tuple is a PyStructSequence"""
+    attributes = ('n_sequence_fields', 'n_fields', 'n_unnamed_fields')
+    return type(value) != tuple and all(hasattr(value, a) for a in attributes)
+
+
+def is_printable_tuple_element(element, recurse=True):
+    """Helper function to check if an element of a tuple is printable"""
+    # For lists, we'll omit their elements
+    if isinstance(element, (bool, int, float, str, bytes, NoneType, list)):
+        return True
+    elif recurse and isinstance(element, tuple):
+        # For now, we'll only recurse once
+        return all(is_printable_tuple_element(e, recurse=False) for e in element)
+    elif element is bpy.app.handlers.persistent:
+        return True
+    else:
+        return False
+
+
+def printable_tuple_repr(element, recurse=True):
+    """Helper function to convert a tuple or tuple element to a printable value, only 1 level of recursion for nested
+     tuples"""
+    if isinstance(element, (bool, int, float, str, bytes, NoneType)):
+        return repr(element) if recurse else element
+    elif isinstance(element, list):
+        # Lists are usually not fixed values, so we don't print their contents
+        return repr([]) if recurse else []
+    elif isinstance(element, tuple):
+        # Currently, we only recurse a maximum of once
+        assert recurse
+        return repr(tuple(printable_tuple_repr(e, recurse=False) for e in element))
+    elif element is bpy.app.handlers.persistent:
+        # Specifically handle bpy.app.handlers.persistent so that we can print bpy.app.handlers
+        # _persistent is a fake class that we have added to bpy.app
+        return "_persistent"
+    else:
+        raise TypeError(f"Invalid type {type(element)}")
+
+
+def print_pystructsequence(ident, fw, attribute_name, value):
+    # Can only represent as a namedtuple if all the fields are named (all the ones Blender uses appear to have all
+    # named fields)
+    if value.n_unnamed_fields == 0:
+        pystructsequence_type = type(value)
+        # Find all attributes of the class that are MemberDescriptors, these appear to be in the correct
+        # order, but we'll check anyway
+        descriptor_names = []
+        for tuple_attribute_name, tuple_attribute in pystructsequence_type.__dict__.items():
+            if isinstance(tuple_attribute, types.MemberDescriptorType):
+                descriptor_names.append(tuple_attribute_name)
+        # Check that the length of the tuple matches the length of the descriptor names
+        if len(value) == len(descriptor_names):
+            tuple_values_from_descriptor = []
+            for tuple_attribute_name in descriptor_names:
+                tuple_values_from_descriptor.append(getattr(value, tuple_attribute_name))
+            # Check that the values from descriptors are the same as those from converting to a tuple
+            if tuple(tuple_values_from_descriptor) == tuple(value):
+                # We're good to
+                full_subclass_name = f"{pystructsequence_type.__module__}.{pystructsequence_type.__name__}"
+                class_args = ', '.join(descriptor_names)
+                instance_args = ', '.join(printable_tuple_repr(v) for v in value)
+                fw(
+                    f"{ident}# Actual type is a C defined PyStructSequence. Converted to a namedtuple by pypredef_gen\n"
+                    f"{ident}{attribute_name} = namedtuple('{full_subclass_name}', '{class_args}')({instance_args})\n\n"
+                )
+                return
+    # If we reached here there was a problem with representing the PyStructSequence as a namedtuple
+    # We'll convert to a standard tuple and print that instead, the repr of the PyStructSequence will go in a comment
+    fw(f"{ident}{attribute_name} = {printable_tuple_repr(tuple(value))} # instance value: {repr(value)} \n\n")
+
+
 #Helper functions, that transforms the RST doctext like this:
 #   .. method:: from_pydata(vertices, edges, faces)
 #
@@ -1605,98 +1678,21 @@ class _persistent:
 
         elif isinstance(value, tuple):
             # tuples are likely to contain useful, constant data, so we'll try to print them
-            # Helper function to check if an element of a tuple is printable
-            def is_printable(element, recurse=True):
-                # For lists, we'll omit their elements
-                if isinstance(element, (bool, int, float, str, bytes, NoneType, list)):
-                    return True
-                elif recurse and isinstance(element, tuple):
-                    # For now, we'll only recurse once
-                    return all(is_printable(e, recurse=False) for e in element)
-                elif element is bpy.app.handlers.persistent:
-                    return True
+            # Check if every individual element is printable
+            if all(map(is_printable_tuple_element, value)):
+                # Blender uses some c-defined tuples (PyStructSequence) that are similar to namedtuples
+                if is_tuple_pystructsequence(value):
+                    print_pystructsequence("", fw, attribute, value)
+                elif type(value) == tuple:
+                    fw(f"{attribute} = {printable_tuple_repr(value)} # instance value \n\n")
                 else:
-                    return False
-
-            # Helper function to convert a tuple element to a printable value
-            def to_printable(element, recurse=True):
-                if isinstance(element, (bool, int, float, str, bytes, NoneType)):
-                    return repr(element) if recurse else element
-                elif isinstance(element, list):
-                    return repr([]) if recurse else []
-                elif isinstance(element, tuple):
-                    # Currently, we only recurse a maximum of once
-                    assert recurse
-                    return repr(tuple(to_printable(e, recurse=False) for e in element))
-                elif element is bpy.app.handlers.persistent and relative_name == 'bpy.app':
-                    # Specifically handle bpy.app.handlers.persistent so that we can print bpy.app.handlers
-                    # _persistent is a fake class that we have added to bpy.app
-                    return "_persistent"
-                else:
-                    raise TypeError(f"Invalid type {type(element)}")
-            if all(map(is_printable, value)):
-                if type(value) != tuple:
-                    printed_tuple_subtype = False
-                    tuple_subtype = type(value)
-                    # Blender uses some c-defined 'named tuples' called PyStructSequences which we can represent as
-                    # actual namedtuple instances
-                    if (
-                            hasattr(tuple_subtype, 'n_sequence_fields')
-                            and hasattr(tuple_subtype, 'n_fields')
-                            and hasattr(tuple_subtype, 'n_unnamed_fields')
-                            and tuple_subtype.n_unnamed_fields == 0  # Not supporting a mix of named and unnamed fields
-                    ):
-                        # Blender uses some c-defined tuples (StructSequence) that are similar to namedtuples, attempt
-                        # to reformat it as a namedtuple
-                        # Find all attributes of the class that are MemberDescriptors, these appear to be in the correct
-                        # order, but we'll check anyway
-                        descriptor_names = []
-                        for tuple_attribute_name, tuple_attribute in tuple_subtype.__dict__.items():
-                            if isinstance(tuple_attribute, types.MemberDescriptorType):
-                                descriptor_names.append(tuple_attribute_name)
-                        # Initial check that the length of the tuple matches the length of the descriptor names
-                        if len(value) == len(descriptor_names):
-                            tuple_values_from_descriptor = []
-                            for tuple_attribute_name in descriptor_names:
-                                tuple_values_from_descriptor.append(getattr(value, tuple_attribute_name))
-                            # Check that the values from descriptors are the same as those from converting to a tuple
-                            if tuple(tuple_values_from_descriptor) == tuple(value):
-                                # We're good to
-                                full_subclass_name = f"{tuple_subtype.__module__}.{tuple_subtype.__name__}"
-                                class_args = ', '.join(descriptor_names)
-                                instance_args = ', '.join(to_printable(v) for v in value)
-                                fw(
-                                    "# Actual type is a C defined PyStructSequence. Converted to a namedtuple by pypredef_gen\n"
-                                    f"{attribute} = namedtuple('{full_subclass_name}', '{class_args}')({instance_args})\n\n"
-                                )
-                                printed_tuple_subtype = True
-                    # Supporting real namedtuples would be fairly similar
-                    # elif (
-                    #         hasattr(tuple_subtype, '_asdict')
-                    #         and hasattr(tuple_subtype, '_fields')
-                    #         and tuple_subtype.__bases__ == (tuple,)
-                    # ):
-                    #     # Most likely a namedtuple class
-                    #     namedtuple_name = tuple_subtype.__name__
-                    #     class_args = ', '.join(tuple_subtype._fields)
-                    #     instance_args = ', '.join(repr(v) for v in value)
-                    #     fw(
-                    #         "from collections import namedtuple\n"
-                    #         "# Actual type is likely a namedtuple"
-                    #         f"{attribute} = namedtuple('{namedtuple_name}', '{class_args}')({instance_args})\n"
-                    #         "del namedtuple\n\n"
-                    #     )
-                    #     printed_tuple_subtype = True
-                    if not printed_tuple_subtype:
-                        # Other tuple subclasses may not be printable as-is, so create a regular tuple from it and print
-                        # that instead
-                        fw("{0} = {1} # instance value: {2} \n\n".format(attribute, to_printable(tuple(value)), repr(value)))
-                else:
-                    fw("{0} = {1} # instance value \n\n".format(attribute, to_printable(value)))
+                    # Other tuple subclasses may not be printable as-is, so create a regular tuple from it and print
+                    # that instead
+                    fw(f"{attribute} = {printable_tuple_repr(tuple(value))} # instance value: {repr(value)} \n\n")
             else:
-                # It's difficult to reliably print other types
+                # It's difficult to reliably print elements of other types
                 elements_text = " (elements omitted)" if value else ""
-                fw("{0} = {1}() # instance value{2} \n\n".format(attribute, type(value).__qualname__, elements_text))
+                fw(f"{attribute} = {type(value).__qualname__}() # instance value{elements_text} \n\n")
 
         elif isinstance(value, list):
             elements_text = " (elements omitted)" if value else ""
