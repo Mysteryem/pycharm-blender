@@ -154,23 +154,6 @@ ATTRIBUTES_AS_SUBMODULES = {
         # from the current instance will produce predefenitions for many extra attributes
         "context",
     },
-    "bpy.app": {
-        # Script doesn't handle non-RNA classes within modules very well at the moment, so force all of these to be
-        # treated as submodules
-        "handlers",
-        "timers",
-        "translations",
-        "icons",
-        "alembic",
-        "build_options",
-        "ffmpeg",
-        "ocio",
-        "oiio",
-        "opensubdiv",
-        "openvdb",
-        "sdl",
-        "usd",
-    }
 }
 
 # Modules/submodules that will include all attributes, initialised to None if the type can't be represented
@@ -1486,6 +1469,8 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
         import_str = "import"
 
     fw(f"import numpy  # added by pypredef_gen\n")
+    # We try to represent PyStructSequence types as namedtuples
+    fw(f"from collections import namedtuple  # added by pypredef_gen\n")
     # Classes can often be referenced before they are defined so their names are usually prefixed with the module they
     # belong to, for this to work, each module needs to import their top-level module
     top_level_module = relative_name.split('.', maxsplit=1)[0]
@@ -1520,6 +1505,24 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
         fw("from . import {}\n".format(submodule_name))
     if submodules:
         fw("\n")
+
+    if relative_name == 'bpy.app':
+        fake_persistent_class = (
+"""from inspect import isfunction
+
+
+class _persistent:
+    \"\"\"Fake class added by py_predefgen, roughly imitating the behaviour of bpy.app.handlers.persistent\"\"\"
+    def __init__(self, func):
+        if isfunction(func):
+            func._bpy_persistent = None
+        else:
+            raise ValueError("bpy.app.handlers.persistent expected a function")
+
+
+"""
+        )
+        fw(fake_persistent_class)
 
     if is_fake_module and isinstance(module, bpy.types.bpy_struct):
         structs, _, _, _ = get_rna_info()
@@ -1605,8 +1608,36 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
 
         elif isinstance(value, tuple):
             # tuples are likely to contain useful, constant data, so we'll try to print them
-            printable_types = (bool, int, float, str, bytes, NoneType)
-            if all(isinstance(v, printable_types) for v in value):
+            # Helper function to check if an element of a tuple is printable
+            def is_printable(element, recurse=True):
+                # For lists, we'll omit their elements
+                if isinstance(element, (bool, int, float, str, bytes, NoneType, list)):
+                    return True
+                elif recurse and isinstance(element, tuple):
+                    # For now, we'll only recurse once
+                    return all(is_printable(e, recurse=False) for e in element)
+                elif element is bpy.app.handlers.persistent:
+                    return True
+                else:
+                    return False
+
+            # Helper function to convert a tuple element to a printable value
+            def to_printable(element, recurse=True):
+                if isinstance(element, (bool, int, float, str, bytes, NoneType)):
+                    return repr(element) if recurse else element
+                elif isinstance(element, list):
+                    return repr([]) if recurse else []
+                elif isinstance(element, tuple):
+                    # Currently, we only recurse a maximum of once
+                    assert recurse
+                    return repr(tuple(to_printable(e, recurse=False) for e in element))
+                elif element is bpy.app.handlers.persistent and relative_name == 'bpy.app':
+                    # Specifically handle bpy.app.handlers.persistent so that we can print bpy.app.handlers
+                    # _persistent is a fake class that we have added to bpy.app
+                    return "_persistent"
+                else:
+                    raise TypeError(f"Invalid type {type(element)}")
+            if all(map(is_printable, value)):
                 if type(value) != tuple:
                     printed_tuple_subtype = False
                     tuple_subtype = type(value)
@@ -1636,12 +1667,10 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
                                 # We're good to
                                 full_subclass_name = f"{tuple_subtype.__module__}.{tuple_subtype.__name__}"
                                 class_args = ', '.join(descriptor_names)
-                                instance_args = ', '.join(repr(v) for v in value)
+                                instance_args = ', '.join(to_printable(v) for v in value)
                                 fw(
-                                    "from collections import namedtuple\n"
                                     "# Actual type is a C defined PyStructSequence. Converted to a namedtuple by pypredef_gen\n"
-                                    f"{attribute} = namedtuple('{full_subclass_name}', '{class_args}')({instance_args})\n"
-                                    "del namedtuple\n\n"
+                                    f"{attribute} = namedtuple('{full_subclass_name}', '{class_args}')({instance_args})\n\n"
                                 )
                                 printed_tuple_subtype = True
                     # Supporting real namedtuples would be fairly similar
@@ -1664,9 +1693,9 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
                     if not printed_tuple_subtype:
                         # Other tuple subclasses may not be printable as-is, so create a regular tuple from it and print
                         # that instead
-                        fw("{0} = {1} # instance value: {2} \n\n".format(attribute, repr(tuple(value)), repr(value)))
+                        fw("{0} = {1} # instance value: {2} \n\n".format(attribute, to_printable(tuple(value)), repr(value)))
                 else:
-                    fw("{0} = {1} # instance value \n\n".format(attribute, repr(value)))
+                    fw("{0} = {1} # instance value \n\n".format(attribute, to_printable(value)))
             else:
                 # It's difficult to reliably print other types
                 elements_text = " (elements omitted)" if value else ""
