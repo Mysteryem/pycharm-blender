@@ -1961,6 +1961,19 @@ def bpy_base2predef(ident, fw):
             TYPE_ABERRATIONS[collection_idprop_name] = "_bpy_prop_collection_idprop"
             not_available_base_classes.append(bpy_prop_collection_idprop)
 
+    # Base class for UI classes
+    generic_ui_name = '_GenericUI'
+    generic_ui_available = hasattr(bpy.types, generic_ui_name)
+    if generic_ui_available:
+        available_base_classes.append(bpy.types._GenericUI)
+    else:
+        # The type is not available, get it from Panel's __bases__
+        panel_bases = bpy.types.Panel.__bases__
+        generic_ui_type = next((b for b in panel_bases if b.__name__ == generic_ui_name), None)
+        if generic_ui_type is not None:
+            # Not sure if we should prefix this with another '_' or not
+            not_available_base_classes.append(generic_ui_type)
+
     for base_class in available_base_classes:
         print_base_class(ident, base_class)
 
