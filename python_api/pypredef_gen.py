@@ -118,9 +118,6 @@ c = app.build_time
 (because plain "import bpy.app" does not work)!
 '''
 
-import sys
-import builtins
-
 # Switch for quick testing
 # select modules to build:
 INCLUDE_MODULES = [
@@ -163,7 +160,6 @@ DOCUMENT_ALL_ATTRIBUTES_MODULES = {
     "bgl",
 }
 
-_BPY_STRUCT_FAKE = "bpy_struct"
 _BPY_FULL_REBUILD = False
 _IDENT = "    "
 _SPECIAL_HANDLING_MODULES = {"bpy.ops", "bpy.types"}
@@ -301,6 +297,7 @@ _EXTERNAL_MODULE_CLASS_RST = {}
 
 import os
 import sys
+import builtins
 import inspect
 import types
 import importlib
@@ -2113,6 +2110,8 @@ class _generic_prop_collection(Generic[_T], bpy_prop_collection):
     def __getitem__(self, key: _prop_collection_key) -> _T: ...
     @overload
     def __getitem__(self, s: slice) -> Sequence[_T]: ...
+    @overload
+    def __getitem__(self, key) -> _T: ...
     def __iter__(self) -> Iterator[_T]: ...
     def find(self, key: str) -> int: ...
     def get(self, key: Union[str, tuple[str, Optional[str]]], default=None) -> _T: ...
@@ -2126,6 +2125,7 @@ class _generic_prop_array(Generic[_T], bpy_prop_array):
     def __getitem__(self, key: int) -> _T: ...
     @overload
     def __getitem__(self, s: slice) -> Sequence[_T]: ...
+    @overload
     def __getitem__(self, key) -> _T: ...
     def __iter__(self) -> Iterator[_T]: ...
 
