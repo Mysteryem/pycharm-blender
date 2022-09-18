@@ -136,7 +136,21 @@ INCLUDE_MODULES = [
     "freestyle",
     "rna_info",
     "idprop",
+    "nodeitems_utils",
 ]
+
+# Default addon modules:
+ADDON_MODULES = [
+    "io_anim_bvh",
+    "io_scene_fbx",
+    "cycles",
+    "io_scene_obj",
+    "io_mesh_ply",
+    "io_mesh_stl",
+    "io_scene_x3d",
+]
+
+_ADDON_MODULES_INCLUDED = False
 
 # Modules to exclude, each module's .__name__ is checked against this set
 EXCLUDE_MODULES = {
@@ -2248,7 +2262,12 @@ class _generic_prop_collection_idprop(_generic_prop_collection[_T], {bpy_prop_co
             bm_fw(f'"""fake bpy.types submodule for {base_name} types"""\n\n')
 
             bm_fw("from ... import bpy\n"
-               "from ... import mathutils\n")
+                  "from ... import mathutils\n"
+                  "from ... import bl_ui\n"
+                  "import nodeitems_utils\n"
+                  "import bpy_types\n")
+            if _ADDON_MODULES_INCLUDED:
+                bm_fw(f"import {', '.join(ADDON_MODULES)}\n")
             # Extra imports for type hints
             bm_fw("from typing import Union, Literal, Annotated, Sequence, TypeVar, Iterator, Optional, Generic, overload\n\n")
 
@@ -2290,9 +2309,16 @@ def rna2predef(BASEPATH):
         # included
         INCLUDE_MODULES.append("_freestyle")
 
+    if 'cycles' in INCLUDE_MODULES and '_cycles' not in EXCLUDE_MODULES:
+        # Include built-in _cycles module when cycles module is included
+        INCLUDE_MODULES.append("_cycles")
+
     for module_name in INCLUDE_MODULES:
         if module_name not in EXCLUDE_MODULES:
-            module = importlib.import_module(module_name)
+            try:
+                module = importlib.import_module(module_name)
+            except ModuleNotFoundError as mnfe:
+                _ERRORS.append(str(mnfe))
             if module_name == 'bgl':
                 # reloading bgl seems to get more of the functions to load
                 module = importlib.reload(module)
@@ -2344,6 +2370,11 @@ def main():
 
         parser.add_argument("--skip-files", "-s", dest="skip_files", action='store_true', default=False, required=False,
                             help="Skip modules that already exist as files instead of copying the files")
+
+        # TODO: Option to include addon modules, default to False because they're not really referenced outside of Panel
+        #  functions
+        if _ADDON_MODULES_INCLUDED:
+            INCLUDE_MODULES.extend(ADDON_MODULES)
 
         args = parser.parse_args(argv)
 
