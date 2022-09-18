@@ -160,6 +160,8 @@ DOCUMENT_ALL_ATTRIBUTES_MODULES = {
     "bgl",
 }
 
+_ERRORS = []
+
 _BPY_FULL_REBUILD = False
 _IDENT = "    "
 _SPECIAL_HANDLING_MODULES = {"bpy.ops", "bpy.types"}
@@ -330,6 +332,20 @@ def write_indented_lines(ident: str, fn: Callable[[str], None], text: str, strip
             fn(ident + l.strip() + "\n")
         else:
             fn(ident + l + "\n")
+
+
+def get_full_type_name(type_: type) -> str:
+    """Helper function to get full name of type, including module"""
+    if type_.__module__ == 'builtins':
+        if not hasattr(builtins, type_.__name__):
+            # Type comes from C, but isn't in builtins, so we'll have to guess as to where it can be found
+            if hasattr(bpy.types, type_.__name__):
+                return "bpy.types." + type_.__name__
+            else:
+                raise RuntimeError(f"Unknown module for type: {type_}")
+        return type_.__qualname__
+    else:
+        return type_.__module__ + "." + type_.__qualname__
 
 
 def is_tuple_pystructsequence(value):
@@ -729,9 +745,49 @@ def rna2list(info):
     definition = {"@def":{"description":"", "ord":0}} #at the beginning: empty description of function definition
 
     if type(info) == rna_info.InfoStructRNA:
-        # base class of this struct, if there is no RNA base, its base is bpy_struct
-        base_id = info.base.identifier if info.base else "bpy.types.bpy_struct"
-        prototype = "class {0}({1}):".format(info.identifier, base_id)
+        py_class = info.py_class
+        # base classes of this struct
+        bases = []
+
+        if (
+                type(py_class) == bpy.types.bpy_struct_meta_idprop
+                and (py_class.__module__ != "bpy.types" or py_class.__name__ != info.identifier)
+        ):
+            # Structs that have a type that uses the bpy_struct_meta_idprop metaclass are often combined with an
+            # existing type which is the real py_class that gets used at runtime. If we simply use the real type
+            # directly in our documentation of bpy.types.<identifier>, e.g.
+            #   "{identifier} = {py_class.__module__}.{py_class.__qualname__}"
+            # or
+            #   "from {py_class.__module__} import {py_class.__qualname__} as {identifier}"
+            # PyCharm would miss all the extra properties and functions from the StructRNA that are added to the real
+            # type at runtime.
+            # As a workaround, we make a new bpy.types version of the struct that is a subclass of its real type.
+
+            # Add the real type as a base (it should go before the real bases to match the method resolution order)
+            bases.append(py_class)
+
+            # skip any base classes that are superclasses of the metaclass, by comparing against the method resolution
+            # order, to avoid duplicates
+            metaclass_mro = set(py_class.mro())
+            for py_base in py_class.__bases__:
+                if py_base not in metaclass_mro:
+                    bases.append(py_base)
+        else:
+            bases = py_class.__bases__
+
+        # Sanity check that the bl_rna reported base is included in bases, either directly, or as a superclass
+        # (the base type in the InfoStructRNA comes from py_class.bl_rna.base)
+        if info.base:
+            rna_base_type = info.base.py_class
+            if rna_base_type:
+                found_base = False
+                for base in bases:
+                    found_base |= issubclass(base, rna_base_type)
+                if not found_base:
+                    _ERRORS.append(f"bl_rna reported base type {rna_base_type} is missing from {py_class} bases:"
+                                   f" {py_class.__bases__}")
+
+        prototype = "class {0}({1}):".format(info.identifier, ",".join(map(get_full_type_name, bases)))
         definition["@def"].setdefault("prototype",prototype)
         definition["@def"]["description"] = info.description
         definition["@def"].setdefault("hint","class")
@@ -1296,9 +1352,7 @@ def pyprop2predef(ident, fw, identifier, py_prop):
 
 
 def guess_prefixed_class_name(module_name, clazz):
-    # Overrides for some modules
-    module_overrides = {"bpy_types": "bpy.types"}
-    module = module_overrides.get(clazz.__module__, clazz.__module__)
+    module = clazz.__module__
     if module == 'builtins':
         # Classes from C may say their module is 'builtins', check that against the actual 'builtins' module
         if hasattr(builtins, clazz.__qualname__):
@@ -1320,6 +1374,19 @@ def pyclass2predef(fw, module_name, type_name, value):
         @type_name (string): the name of the class
         @value (<class type>): the descriptor of this type
     '''
+    if module_name in sys.modules and getattr(sys.modules[module_name], '__file__', None):
+        try:
+            # Normally this is only used by bl_ui.UI_UL_list since most classes with available source will have their
+            # entire module available, in which case the entire module is copied and printing individual attributes like
+            # classes is skipped. In a few cases, mainly for top-level modules such as bl_ui, we have to add extra
+            # imports in the code where the imports would normally be added programmatically, otherwise PyCharm won't be
+            # able to pick up on them
+            src_str = inspect.getsource(value)
+            fw(src_str)
+            return
+        except TypeError:
+            pass
+
     if value.__bases__ == (object,):
         fw("class %s:\n" % type_name)
     else:
@@ -1506,7 +1573,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     # already has the file added as an external library and doesn't want it duplicated)
     # We ignore 'bpy' as it specifically tries to import c-defined submodules from _bpy, the C-defined module, but we
     # need it to set up our fake/stubbed modules
-    if hasattr(module, '__file__') and true_module_name != 'bpy':
+    if hasattr(module, '__file__') and true_module_name != 'bpy' and true_module_name != 'bl_ui':
         if _ARG_SKIP_FILES:
             print(f"- {true_module_name} already exists as a file. Skipping it.")
         else:
@@ -1822,6 +1889,17 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
     '''
 
     if not is_fake_module:
+        py_class = descr.py_class
+        if module_name and module_name != py_class.__module__:
+            # Make sure it isn't a custom metaclass type that usually combines the struct with a class in bpy_types,
+            # otherwise we lose all the properties/etc. defined in the struct
+            if type(py_class) != bpy.types.bpy_struct_meta_idprop:
+                if descr.identifier == py_class.__name__:
+                    fw(ident + f"from {py_class.__module__} import {py_class.__name__}\n\n")
+                else:
+                    fw(ident + f"from {py_class.__module__} import {py_class.__name__} as {descr.identifier}\n\n")
+                return
+
         print("class %s:" % descr.identifier)
         definition = doc2definition(rna2list(descr), module_name=module_name)
         write_indented_lines(ident,fw, definition["declaration"],False)
@@ -1957,19 +2035,6 @@ def bpy_base2predef(ident, fw):
             TYPE_ABERRATIONS[collection_idprop_name] = "_bpy_prop_collection_idprop"
             not_available_base_classes.append(bpy_prop_collection_idprop)
 
-    # Base class for UI classes
-    generic_ui_name = '_GenericUI'
-    generic_ui_available = hasattr(bpy.types, generic_ui_name)
-    if generic_ui_available:
-        available_base_classes.append(bpy.types._GenericUI)
-    else:
-        # The type is not available, get it from Panel's __bases__
-        panel_bases = bpy.types.Panel.__bases__
-        generic_ui_type = next((b for b in panel_bases if b.__name__ == generic_ui_name), None)
-        if generic_ui_type is not None:
-            # Not sure if we should prefix this with another '_' or not
-            not_available_base_classes.append(generic_ui_type)
-
     for base_class in available_base_classes:
         print_base_class(ident, base_class)
 
@@ -2078,6 +2143,16 @@ def bpy2predef(BASEPATH, title, write_ops, write_types):
             file.close()
 
     if write_types:
+        # Fake _bpy module so that copied bpy_types mostly works
+        _bpy_path = os.path.join(BASEPATH, "_bpy.py")
+        file = open(_bpy_path, "w")
+        file.write(
+            '"""Fake _bpy module so that bpy_types works"""\n'
+            "import bpy.types as types\n")
+        file.close()
+
+        INCLUDE_MODULES.append('bpy_types')
+
         #classes (Blender structures:)
         types_dirpath = os.path.join(dirpath, "types")
         if not os.path.isdir(types_dirpath):
@@ -2345,6 +2420,10 @@ def main():
             print("\nSome graphics dependent types and modules (mainly the bgl module) may not be loaded fully when"
                   " running with the -b argument. If you need full predefinition files for graphics related types and"
                   " modules, run the script without the -b argument")
+
+        if _ERRORS:
+            print("Errors:\n\t", end="")
+            print(*_ERRORS, sep="\n\t")
 
 
 
