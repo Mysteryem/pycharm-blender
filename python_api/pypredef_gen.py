@@ -804,7 +804,7 @@ def rna2list(info):
         bases = []
 
         if (
-                type(py_class) == bpy.types.bpy_struct_meta_idprop
+                isinstance(py_class, bpy.types.bpy_struct_meta_idprop)
                 and (py_class.__module__ != "bpy.types" or py_class.__name__ != info.identifier)
         ):
             # Structs that have a type that uses the bpy_struct_meta_idprop metaclass are often combined with an
@@ -1993,7 +1993,7 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
         if module_name and module_name != class_module:
             # Make sure it isn't a custom metaclass type that usually combines the struct with a class in bpy_types,
             # otherwise we lose all the properties/etc. defined in the struct
-            if type(py_class) != bpy.types.bpy_struct_meta_idprop:
+            if not isinstance(py_class, bpy.types.bpy_struct_meta_idprop):
                 if descr.identifier == py_class.__name__:
                     fw(ident + f"from {class_module} import {py_class.__name__}\n\n")
                 else:
