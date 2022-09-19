@@ -388,8 +388,11 @@ def write_indented_lines(ident: str, fn: Callable[[str], None], text: str, strip
             fn(ident + l + "\n")
 
 
-def get_full_type_name(type_: type) -> str:
+def get_full_type_name(type_: type, module_override=None) -> str:
     """Helper function to get full name of type, including module"""
+    if module_override:
+        return module_override + "." + type_.__qualname__
+
     if type_.__module__ == 'builtins':
         if not hasattr(builtins, type_.__name__):
             # Type comes from C, but isn't in builtins, so we'll have to guess as to where it can be found
@@ -802,32 +805,44 @@ def rna2list(info):
         py_class = info.py_class
         # base classes of this struct
         bases = []
+        module_overrides = []
 
-        if (
-                isinstance(py_class, bpy.types.bpy_struct_meta_idprop)
-                and (py_class.__module__ != "bpy.types" or py_class.__name__ != info.identifier)
-        ):
-            # Structs that have a type that uses the bpy_struct_meta_idprop metaclass are often combined with an
-            # existing type which is the real py_class that gets used at runtime. If we simply use the real type
-            # directly in our documentation of bpy.types.<identifier>, e.g.
-            #   "{identifier} = {py_class.__module__}.{py_class.__qualname__}"
-            # or
-            #   "from {py_class.__module__} import {py_class.__qualname__} as {identifier}"
-            # PyCharm would miss all the extra properties and functions from the StructRNA that are added to the real
-            # type at runtime.
-            # As a workaround, we make a new bpy.types version of the struct that is a subclass of its real type.
+        if isinstance(py_class, bpy.types.bpy_struct_meta_idprop):
+            if py_class.__module__ != "bpy.types":
+                # Structs that have a type that uses the bpy_struct_meta_idprop metaclass are often combined with an
+                # existing type which is the real py_class that gets used at runtime. If we simply use the real type
+                # directly in our documentation of bpy.types.<identifier>, e.g.
+                #   "{identifier} = {py_class.__module__}.{py_class.__qualname__}"
+                # or
+                #   "from {py_class.__module__} import {py_class.__qualname__} as {identifier}"
+                # PyCharm would miss all the extra properties and functions from the StructRNA that are added to the real
+                # type at runtime.
+                # As a workaround, we make a new bpy.types version of the struct that is a subclass of its real type.
 
-            # Add the real type as a base (it should go before the real bases to match the method resolution order)
-            bases.append(py_class)
+                # Add the real type as a base (it should go before the real bases to match the method resolution order)
+                bases.append(py_class)
 
-            # skip any base classes that are superclasses of the metaclass, by comparing against the method resolution
-            # order, to avoid duplicates
-            metaclass_mro = set(py_class.mro())
-            for py_base in py_class.__bases__:
-                if py_base not in metaclass_mro:
+                # skip any base classes that are superclasses of the metaclass, by comparing against the method resolution
+                # order, to avoid duplicates
+                metaclass_mro = set(py_class.mro())
+                for py_base in py_class.__bases__:
+                    if py_base not in metaclass_mro:
+                        bases.append(py_base)
+                module_overrides = [None] * len(bases)
+                definition["@def"]["is_fake_class"] = True
+            else:
+                for py_base in py_class.__bases__:
                     bases.append(py_base)
+                    # If the base is a class we've replaced with a fake class extending the real class, change the base
+                    # to the fake class
+                    if isinstance(py_base, bpy.types.bpy_struct_meta_idprop) and py_base.__module__ != "bpy.types":
+                        module_overrides.append("bpy.types")
+                    else:
+                        module_overrides.append(None)
+                definition["@def"]["bases_fake"] = True
         else:
             bases = py_class.__bases__
+            module_overrides = [None] * len(bases)
 
         # Sanity check that the bl_rna reported base is included in bases, either directly, or as a superclass
         # (the base type in the InfoStructRNA comes from py_class.bl_rna.base)
@@ -841,7 +856,8 @@ def rna2list(info):
                     _ERRORS.append(f"bl_rna reported base type {rna_base_type} is missing from {py_class} bases:"
                                    f" {py_class.__bases__}")
 
-        prototype = "class {0}({1}):".format(info.identifier, ",".join(map(get_full_type_name, bases)))
+        bases_strings = ",".join(map(get_full_type_name, bases, module_overrides))
+        prototype = "class {0}({1}):".format(info.identifier, bases_strings)
         definition["@def"].setdefault("prototype",prototype)
         definition["@def"]["description"] = info.description
         definition["@def"].setdefault("hint","class")
@@ -1189,6 +1205,12 @@ def doc2definition(doc,docstring_ident=_IDENT, module_name=None):
 
     if not lines:
         lines.append("<not documented>\n")
+
+    if "is_fake_class" in _def:
+        write_indented_lines(ident, al, "This is a fake class added by pypredef_gen", False)
+
+    if "bases_fake" in _def:
+        write_indented_lines(ident, al, "This class has a fake class added by pypredef_gen in its bases", False)
 
     result = {"docstring" : docstring_ident + "\"\"\"" + "".join(lines)+ docstring_ident  + "\"\"\"\n"}
 
