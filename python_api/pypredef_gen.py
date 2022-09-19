@@ -2479,10 +2479,6 @@ def main():
 
         _ARG_SKIP_FILES = args.skip_files
 
-        #these two strange lines below are just to make the debugging easier (to let it run many times from within Blender)
-        import imp
-        imp.reload(rna_info) #to avoid repeated arguments in function definitions on second and the next runs - a bug in rna_info.py....
-
         if len(bpy.data.filepath)==0 or __file__[:len(bpy.data.filepath)] != bpy.data.filepath:
             script_dir = os.path.dirname(__file__)
         else:
