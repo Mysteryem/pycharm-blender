@@ -128,6 +128,7 @@ INCLUDE_MODULES = [
     "bgl",
     "bl_math",
     "bl_ui",
+    "bl_operators",
     "blf",
     "mathutils",
     "gpu",
@@ -319,6 +320,7 @@ import inspect
 import types
 import importlib
 import bpy
+import bpy_types
 import rna_info
 import bmesh
 import argparse
@@ -368,6 +370,24 @@ class FuncType(NamedTuple):
 
     def is_static_method(self):
         return self.func_type == FuncTypeEnum.STATIC_METHOD
+
+
+def get_top_level_module(module_str: str) -> str:
+    """Helper function to get the top-level module from a module string"""
+    return module_str.split('.', maxsplit=1)[0]
+
+
+def is_included(class_or_module: Union[type, types.ModuleType, str]) -> bool:
+    """Helper function to check if a class is in or a module is an included module"""
+    if isinstance(class_or_module, type):
+        module_str = class_or_module.__module__
+    elif isinstance(class_or_module, types.ModuleType):
+        module_str = class_or_module.__name__
+    elif isinstance(class_or_module, str):
+        module_str = class_or_module
+    else:
+        raise TypeError(f"Expected a class, module or string, but got '{class_or_module}'")
+    return get_top_level_module(module_str) in INCLUDE_MODULES
 
 
 def write_indented_lines(ident: str, fn: Callable[[str], None], text: str, strip=True):
@@ -807,7 +827,14 @@ def rna2list(info):
         bases = []
         module_overrides = []
 
-        if isinstance(py_class, bpy.types.bpy_struct_meta_idprop):
+        if (
+            isinstance(py_class, (bpy.types.bpy_struct_meta_idprop, bpy_types.RNAMeta))
+            # Skip if the module isn't included, otherwise we can't reference it
+            and is_included(py_class)
+            # Skip if the struct class is not accessible from its module
+            and py_class.__module__ in sys.modules
+            and hasattr(sys.modules[py_class.__module__], py_class.__qualname__)
+        ):
             if py_class.__module__ != "bpy.types":
                 # Structs that have a type that uses the bpy_struct_meta_idprop metaclass are often combined with an
                 # existing type which is the real py_class that gets used at runtime. If we simply use the real type
@@ -835,7 +862,10 @@ def rna2list(info):
                     bases.append(py_base)
                     # If the base is a class we've replaced with a fake class extending the real class, change the base
                     # to the fake class
-                    if isinstance(py_base, bpy.types.bpy_struct_meta_idprop) and py_base.__module__ != "bpy.types":
+                    if (
+                            isinstance(py_base, (bpy.types.bpy_struct_meta_idprop, bpy_types.RNAMeta))
+                            and py_base.__module__ != "bpy.types"
+                    ):
                         module_overrides.append("bpy.types")
                     else:
                         module_overrides.append(None)
@@ -1248,7 +1278,7 @@ def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
     if (
             is_class and func_module and func_name
             and attribute_defined_class_module != func_module
-            and func_module.split('.', maxsplit=1)[0] in INCLUDE_MODULES
+            and is_included(func_module)
     ):
         func_self = getattr(py_func, '__self__', None)
         if func_self:
@@ -1695,7 +1725,9 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     # already has the file added as an external library and doesn't want it duplicated)
     # We ignore 'bpy' as it specifically tries to import c-defined submodules from _bpy, the C-defined module, but we
     # need it to set up our fake/stubbed modules
-    if hasattr(module, '__file__') and true_module_name != 'bpy' and true_module_name != 'bl_ui':
+    # Similarly, bl_ui and bl_operators we need to replace to allow for setting up their submodules in a
+    # non-programmatic manner so that PyCharm can find them
+    if hasattr(module, '__file__') and true_module_name not in {'bpy', 'bl_ui', 'bl_operators'}:
         if _ARG_SKIP_FILES:
             print(f"- {true_module_name} already exists as a file. Skipping it.")
         else:
@@ -1732,7 +1764,7 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     fw(f"from collections import namedtuple  # added by pypredef_gen\n")
     # Classes can often be referenced before they are defined so their names are usually prefixed with the module they
     # belong to, for this to work, each module needs to import their top-level module
-    top_level_module = relative_name.split('.', maxsplit=1)[0]
+    top_level_module = get_top_level_module(relative_name)
     fw(f"{import_str} {top_level_module}  # added by pypredef_gen\n")
     # It's too much work to figure out when we do/don't need to import bpy and mathutils, so always do it unless it's
     # the top_level_module we just imported
@@ -2015,15 +2047,35 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
         if module_name and module_name != class_module:
             # Make sure it isn't a custom metaclass type that usually combines the struct with a class in bpy_types,
             # otherwise we lose all the properties/etc. defined in the struct
-            if not isinstance(py_class, bpy.types.bpy_struct_meta_idprop):
-                if descr.identifier == py_class.__name__:
-                    fw(ident + f"from {class_module} import {py_class.__name__}\n\n")
+            class_module_prefix = get_top_level_module(class_module)
+            # Can the class actually be access from the module it claims it belongs to?
+            accessible = class_module in sys.modules and hasattr(sys.modules[class_module], py_class.__qualname__)
+            if not isinstance(py_class, (bpy.types.bpy_struct_meta_idprop, bpy_types.RNAMeta)) and accessible:
+                if class_module_prefix in INCLUDE_MODULES:
+                    if descr.identifier == py_class.__name__:
+                        fw(ident + f"from {class_module} import {py_class.__name__}\n")
+                    else:
+                        fw(ident + f"from {class_module} import {py_class.__name__} as {descr.identifier}\n")
+                    return
                 else:
-                    fw(ident + f"from {class_module} import {py_class.__name__} as {descr.identifier}\n\n")
-                return
+                    if descr.identifier == py_class.__name__:
+                        fw(f"\n# {descr.identifier} is accessible in {class_module}, but {class_module} is not an"
+                           f" included module."
+                           f"\n# {descr.identifier} has been reproduced here as a stub.\n")
+                    else:
+                        fw(f"\n# {descr.identifier} is accessible in {class_module} as {py_class.__name__}, but"
+                           f" {class_module} is not an included module."
+                           f"\n# {descr.identifier} has been reproduced here as a stub.\n")
             else:
+                if not accessible:
+                    fw(f"\n# {descr.identifier} claims to be accessible as {class_module}.{py_class.__qualname__}, but"
+                       f" it could not be found\n")
+                else:
+                    fw("\n")
                 if class_module in sys.modules and getattr(sys.modules[class_module], '__file__', None):
                     is_external_py_metaclass = True
+        else:
+            fw("\n")
 
         print("class %s:" % descr.identifier)
         definition = doc2definition(rna2list(descr), module_name=module_name)
@@ -2364,7 +2416,10 @@ class _generic_prop_collection_idprop(_generic_prop_collection[_T], {bpy_prop_co
 
         structs_by_base = defaultdict(list)
         for struct in classes:
-            structs_by_base[get_top_level_base(struct)].append(struct)
+            # Only include classes accessible from bpy.types and from included modules
+            if hasattr(bpy.types, struct.identifier) and is_included(struct.py_class):
+                # Separate structs by their top-level base as a means to separate them into multiple smaller files
+                structs_by_base[get_top_level_base(struct)].append(struct)
 
         for base_name, structs_list in structs_by_base.items():
             base_module_name = "_types_" + base_name.lower()
@@ -2375,11 +2430,18 @@ class _generic_prop_collection_idprop(_generic_prop_collection[_T], {bpy_prop_co
             bm_fw = base_module_file.write
             bm_fw(f'"""fake bpy.types submodule for {base_name} types"""\n\n')
 
-            bm_fw("from ... import bpy\n"
-                  "from ... import mathutils\n"
-                  "from ... import bl_ui\n"
-                  "import nodeitems_utils\n"
-                  "import bpy_types\n")
+            bm_fw("from ... import bpy\n")
+            if "mathutils" in INCLUDE_MODULES:
+                bm_fw("from ... import mathutils\n")
+            if "bl_ui" in INCLUDE_MODULES:
+                bm_fw("from ... import bl_ui\n")
+            if "nodeitems_utils" in INCLUDE_MODULES:
+                bm_fw("import nodeitems_utils\n")
+            if "bl_operators" in INCLUDE_MODULES:
+                bm_fw("from ... import bl_operators\n")
+            if "bpy_types" in INCLUDE_MODULES:
+                bm_fw("import bpy_types\n")
+
             if _ADDON_MODULES_INCLUDED:
                 bm_fw(f"import {', '.join(ADDON_MODULES)}\n")
             # Extra imports for type hints
