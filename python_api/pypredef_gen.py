@@ -1237,9 +1237,9 @@ def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
         return
     function_defined_class = getattr(py_func, '__self__', attribute_defined_class)
     try:
-        arguments = inspect.getfullargspec(py_func)
+        signature = inspect.signature(py_func)
         if is_class:
-            if len(arguments.args) == 0:
+            if len(signature.parameters) == 0:
                 fw(ident + "@staticmethod\n")
             else:
                 static_attr = inspect.getattr_static(function_defined_class, identifier)
@@ -1253,7 +1253,7 @@ def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
         if "declaration" in definition:
             write_indented_lines(ident,fw, definition["declaration"],False)
         else:
-            arg_str = inspect.formatargspec(*arguments)
+            arg_str = str(signature)
             # Set or List default arguments can end up like:
             #   types={<class 'Stroke'>, <class 'StrokeVertexIterator'>}
             arg_str = arg_str.replace("<class '", "").replace("'>", "")
@@ -1401,9 +1401,9 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
         # *argv, when we do not know about its arguments
         arg_str = "(*argv)"
         try:
-            # getfullargspec can parse .__text_signature__ if present
-            arg_str = inspect.formatargspec(*inspect.getfullargspec(py_func))
-        except TypeError:
+            # inspect.signature can parse .__text_signature__ if present
+            arg_str = str(inspect.signature(py_func))
+        except ValueError:
             pass
         if "returns" in definition:
             fw(f"{ident}def {identifier}{arg_str} -> {definition['returns']}:\n")
