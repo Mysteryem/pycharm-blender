@@ -175,6 +175,7 @@ DOCUMENT_ALL_ATTRIBUTES_MODULES = {
 }
 
 _ERRORS = []
+_WARNINGS = []
 
 _BPY_FULL_REBUILD = False
 _IDENT = "    "
@@ -322,12 +323,51 @@ import rna_info
 import bmesh
 import argparse
 import shutil
-from typing import Callable
+from typing import Callable, Optional, Union, NamedTuple, Any
 from collections import defaultdict
+from enum import Enum
 
 # BMeshOpFunc type is not exposed directly by the current Blender API
 BMeshOpFuncType = type(bmesh.ops.split)
 NoneType = types.NoneType if hasattr(types, 'NoneType') else type(None)
+
+
+class FuncTypeEnum(Enum):
+    FUNCTION = 0,
+    INSTANCE_METHOD = 1,
+    CLASS_METHOD = 2,
+    STATIC_METHOD = 3,
+
+
+class FuncType(NamedTuple):
+    func_type: FuncTypeEnum
+    bind_target: Any = None
+    unbound_method: Optional[Union[classmethod, staticmethod]] = None
+
+    @classmethod
+    def from_descr(cls, method_func_or_descriptor):
+        if isinstance(method_func_or_descriptor, types.MethodDescriptorType):
+            return cls(FuncTypeEnum.INSTANCE_METHOD, bind_target=method_func_or_descriptor.__objclass__)
+        elif isinstance(method_func_or_descriptor, types.ClassMethodDescriptorType):
+            return cls(FuncTypeEnum.CLASS_METHOD, bind_target=method_func_or_descriptor.__objclass__)
+        elif isinstance(method_func_or_descriptor, classmethod):
+            return cls(FuncTypeEnum.CLASS_METHOD, unbound_method=method_func_or_descriptor)
+        elif isinstance(method_func_or_descriptor, staticmethod):
+            return cls(FuncTypeEnum.STATIC_METHOD, unbound_method=method_func_or_descriptor)
+        else:
+            return cls(FuncTypeEnum.FUNCTION)
+
+    def is_function(self):
+        return self.func_type == FuncTypeEnum.FUNCTION
+
+    def is_instance_method(self):
+        return self.func_type == FuncTypeEnum.INSTANCE_METHOD
+
+    def is_class_method(self):
+        return self.func_type == FuncTypeEnum.CLASS_METHOD
+
+    def is_static_method(self):
+        return self.func_type == FuncTypeEnum.STATIC_METHOD
 
 
 def write_indented_lines(ident: str, fn: Callable[[str], None], text: str, strip=True):
@@ -1173,6 +1213,28 @@ def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
         @is_class (boolean): True, when it is a class member
     '''
     is_class = attribute_defined_class is not None
+    if is_class:
+        if identifier not in attribute_defined_class.__dict__:
+            # Skip functions that are not defined on this class, as this indicates that they are defined in one of the
+            # class' bases and not overridden
+            return
+
+    # If the function is defined in a different module which is also included, reference the function
+    func_module = getattr(py_func, '__module__', None)
+    func_name = getattr(py_func, '__name__', None)
+    attribute_defined_class_module = getattr(attribute_defined_class, '__module__', None)
+    if (
+            is_class and func_module and func_name
+            and attribute_defined_class_module != func_module
+            and func_module.split('.', maxsplit=1)[0] in INCLUDE_MODULES
+    ):
+        func_self = getattr(py_func, '__self__', None)
+        if func_self:
+            func_self_module = func_self.__module__
+            fw(ident + f"{identifier} = {func_self_module}.{func_self.__qualname__}.{py_func.__name__}\n\n")
+        else:
+            fw(ident + f"{identifier} = {func_module}.{py_func.__name__}\n\n")
+        return
     function_defined_class = getattr(py_func, '__self__', attribute_defined_class)
     try:
         arguments = inspect.getfullargspec(py_func)
@@ -1241,7 +1303,7 @@ def py_descr2predef(ident, fw, descr, module_name, type_name, identifier):
     if identifier.startswith("_"):
         return
 
-    if type(descr) in (types.GetSetDescriptorType, types.MemberDescriptorType): #an attribute of the module or class
+    if isinstance(descr, (types.GetSetDescriptorType, types.MemberDescriptorType)): #an attribute of the module or class
         definition = doc2definition(descr.__doc__,"", module_name=module_name) #parse the eventual RST sphinx markup
         if "returns" in definition:
             returns = definition["returns"]
@@ -1253,14 +1315,16 @@ def py_descr2predef(ident, fw, descr, module_name, type_name, identifier):
         if "docstring" in definition:
             write_indented_lines(ident,fw,definition["docstring"],False)
 
-    elif type(descr) in (types.MethodDescriptorType, types.ClassMethodDescriptorType):
-        py_c_func2predef(ident,fw,module_name,type_name,identifier,descr,True)
+    elif isinstance(descr, types.MethodDescriptorType):
+        py_c_func2predef(ident, fw, module_name, type_name, identifier, descr, True, func_type=FuncType.from_descr(descr))
+    elif isinstance(descr, types.ClassMethodDescriptorType):
+        py_c_func2predef(ident, fw, module_name, type_name, identifier, descr, True, func_type=FuncType.from_descr(descr))
     else:
         raise TypeError("type was not MemberDescriptiorType, GetSetDescriptorType, MethodDescriptorType or ClassMethodDescriptorType")
     fw("\n")
 
 
-def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_class=True):
+def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_class=True, func_type=FuncType(FuncTypeEnum.FUNCTION)):
     ''' Creates declaration of a function or class method
         Details:
         @ident (string): the required prefix (spaces)
@@ -1278,14 +1342,32 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
     else:
         doc = py_func.__doc__
     definition = doc2definition(doc, module_name=module_name) #parse the eventual RST sphinx markup
-    function_type = definition.get("function_type")
-    is_class_method = type(py_func) == types.ClassMethodDescriptorType or function_type == 'classmethod'
-    if is_class_method:
+    doc_function_type = definition.get("function_type")
+
+    if func_type.is_class_method():
+        # Add the @classmethod decorator
         fw(ident+"@classmethod\n")
-    is_static_method = function_type == 'staticmethod'
-    if is_static_method:
-        assert not is_class_method
+        if doc_function_type == 'staticmethod':
+            _WARNINGS.append(f"Documentation error: The __doc__ for {module_name}.{type_name}.{identifier} claims it is"
+                             f" a {doc_function_type}, but by inspection, it is a classmethod")
+    elif func_type.is_static_method():
+        # Add the @staticmethod decorator
         fw(ident + "@staticmethod\n")
+        if doc_function_type == 'classmethod':
+            _WARNINGS.append(f"Documentation error: The __doc__ for {module_name}.{type_name}.{identifier} claims it is"
+                             f" a {doc_function_type}, but by inspection, it is a staticmethod")
+    elif func_type.is_instance_method():
+        # We won't be picky if the documentation says it's a function instead, since it can be implied from whether it
+        # belongs to a class
+        if doc_function_type == "classmethod" or doc_function_type == "staticmethod":
+            _WARNINGS.append(f"Documentation error: The __doc__ for {module_name}.{type_name}.{identifier} claims it is"
+                             f" a {doc_function_type}, but by inspection, it is a method")
+    elif func_type.is_function():
+        # We won't be picky if the documentation says it's a method instead, since it can be implied from whether it
+        # belongs to a class
+        if doc_function_type == "classmethod" or doc_function_type == "staticmethod":
+            _WARNINGS.append(f"Documentation error: The __doc__ for {module_name}.{type_name}.{identifier} claims it is"
+                             f" a {doc_function_type}, but by inspection, it is a function")
 
     if "declaration" in definition:
         declaration = definition["declaration"]
@@ -1295,12 +1377,12 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
                 no_args = "()->" in declaration.replace(" ", "")
             else:
                 no_args = "():" in declaration.replace(" ", "")
-            if is_class_method:
+            if func_type.is_class_method():
                 if no_args:
                     declaration = declaration.replace("(", "(cls", 1)
                 else:
                     declaration = declaration.replace("(", "(cls, ", 1)
-            elif not is_static_method:
+            elif not func_type.is_static_method():
                 if no_args:
                     declaration = declaration.replace("(", "(self", 1)
                 else:
@@ -1431,31 +1513,35 @@ def pyclass2predef(fw, module_name, type_name, value):
     py_c_functions = []
     class_attributes = []
     for key, descr in descr_items:
-        # Not sure if this is correct to do, but get the corresponding function when we get a staticmethod or
-        # classmethod object
-        if isinstance(descr, staticmethod):
-            descr = getattr(value, key)
-        elif isinstance(descr, classmethod):
-            descr = getattr(value, key)
+        if isinstance(descr, (staticmethod, classmethod)):
+            func_type = FuncType.from_descr(descr)
+            # getattr(value, key) would return the function too, but it will be bound in the case of a classmethod
+            # Usually the function will be a py_function, but sometimes it can be a built-in function/method too
+            descr = descr.__func__
+
+        else:
+            func_type = None
+
+        element_pair = (key, descr)
 
         if isinstance(descr, types.ClassMethodDescriptorType):
-            py_class_method_descriptors.append((key, descr))
+            py_class_method_descriptors.append(element_pair)
         elif isinstance(descr, types.MethodDescriptorType):
-            py_method_descriptors.append((key, descr))
+            py_method_descriptors.append(element_pair)
         elif isinstance(descr, (types.FunctionType, types.MethodType)):
-            py_functions.append((key, descr))
+            py_functions.append(element_pair)
         elif isinstance(descr, types.GetSetDescriptorType):
-            py_getset_descriptors.append((key, descr))
+            py_getset_descriptors.append(element_pair)
         elif isinstance(descr, property):
-            py_properties.append((key, descr))
+            py_properties.append(element_pair)
         elif isinstance(descr, types.MemberDescriptorType):
-            py_member_descriptors.append((key, descr))
+            py_member_descriptors.append(element_pair)
         elif isinstance(descr, (types.BuiltinFunctionType, types.BuiltinMethodType)):
-            py_c_functions.append((key, descr))
+            py_c_functions.append((key, descr, func_type))
         elif isinstance(descr, types.WrapperDescriptorType):
-            py_wrapper_descriptors.append((key, descr))
+            py_wrapper_descriptors.append(element_pair)
         elif isinstance(descr, (bool, int, float, str, bytes, NoneType)):
-            class_attributes.append((key, descr))
+            class_attributes.append(element_pair)
         else:
             print("\tnot documenting {}.{} of type {}".format(type_name, key, type(descr)))
 
@@ -1487,8 +1573,8 @@ def pyclass2predef(fw, module_name, type_name, value):
     for key, descr in py_member_descriptors:
         py_descr2predef(_IDENT, fw, descr, module_name, "", key)
 
-    for key, descr in py_c_functions:
-        py_c_func2predef(_IDENT, fw, module_name, type_name, key, descr, is_class=True)
+    for key, descr, func_type in py_c_functions:
+        py_c_func2predef(_IDENT, fw, module_name, type_name, key, descr, is_class=True, func_type=func_type)
 
     all_printed = [py_wrapper_descriptors_written, py_class_method_descriptors, py_method_descriptors,
                    py_functions_written, py_getset_descriptors, py_properties, py_member_descriptors, py_c_functions,
@@ -1720,8 +1806,6 @@ class _persistent:
 
     all_attributes = sorted(all_attributes)
 
-    # has_bpy_types = relative_name != 'bpy' and any(isinstance(v, bpy.types.bpy_struct) for _, v in all_attributes)
-
     #list classes:
     classes = []
 
@@ -1902,17 +1986,22 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
         @fake_module (bool): if true, print only the properties and functions without indentation and return attribute names
     '''
 
+    is_external_py_metaclass = False
     if not is_fake_module:
         py_class = descr.py_class
-        if module_name and module_name != py_class.__module__:
+        class_module = py_class.__module__
+        if module_name and module_name != class_module:
             # Make sure it isn't a custom metaclass type that usually combines the struct with a class in bpy_types,
             # otherwise we lose all the properties/etc. defined in the struct
             if type(py_class) != bpy.types.bpy_struct_meta_idprop:
                 if descr.identifier == py_class.__name__:
-                    fw(ident + f"from {py_class.__module__} import {py_class.__name__}\n\n")
+                    fw(ident + f"from {class_module} import {py_class.__name__}\n\n")
                 else:
-                    fw(ident + f"from {py_class.__module__} import {py_class.__name__} as {descr.identifier}\n\n")
+                    fw(ident + f"from {class_module} import {py_class.__name__} as {descr.identifier}\n\n")
                 return
+            else:
+                if class_module in sys.modules and getattr(sys.modules[class_module], '__file__', None):
+                    is_external_py_metaclass = True
 
         print("class %s:" % descr.identifier)
         definition = doc2definition(rna2list(descr), module_name=module_name)
@@ -1940,8 +2029,15 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
         rna_function2predef(ident, fw, function)
 
     py_functions = descr.get_py_functions()
+    # If it's a fake module, there's no inheritance due to it not being a class, so we can't check against the class to
+    # see if we need to include the function or not
+    owning_class = None if is_fake_module else descr.py_class
     for identifier, function in py_functions:
-        pyfunc2predef(ident, fw, identifier, function, attribute_defined_class=descr.py_class)
+        # If the class is a metaclass, exists in a python file and the function does too, skip it as the class in
+        # bpy.types will be faked and inherit from the metaclass
+        if is_external_py_metaclass and hasattr(function, '__code__'):
+            continue
+        pyfunc2predef(ident, fw, identifier, function, attribute_defined_class=owning_class)
 
     if is_fake_module:
         all_attributes = set()
@@ -2411,6 +2507,18 @@ def main():
 
         rna2predef(path_in_tmp)
 
+        # Print warnings and errors
+        if bpy.app.background:
+            print("\nSome graphics dependent types and modules (mainly the bgl module) may not be loaded fully when"
+                  " running with the -b argument. If you need full predefinition files for graphics related types and"
+                  " modules, run the script without the -b argument")
+        if _WARNINGS:
+            print("Warnings:\n\t", end="")
+            print(*_WARNINGS, sep="\n\t")
+        if _ERRORS:
+            print("Errors:\n\t", end="")
+            print(*_ERRORS, sep="\n\t")
+
         if not _BPY_FULL_REBUILD:
             import filecmp
 
@@ -2447,15 +2555,6 @@ def main():
                     shutil.copy(f_from, f_to)
                 '''else:
                     print("\tkeeping: %s" % f) # eh, not that useful'''
-        if bpy.app.background:
-            print("\nSome graphics dependent types and modules (mainly the bgl module) may not be loaded fully when"
-                  " running with the -b argument. If you need full predefinition files for graphics related types and"
-                  " modules, run the script without the -b argument")
-
-        if _ERRORS:
-            print("Errors:\n\t", end="")
-            print(*_ERRORS, sep="\n\t")
-
 
 
 main() #just run it! Unconditional call makes it easier to debug Blender script in Eclipse,
