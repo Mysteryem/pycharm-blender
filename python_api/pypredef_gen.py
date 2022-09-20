@@ -2717,10 +2717,10 @@ def main():
                   " modules, run the script without the -b argument")
         if _WARNINGS:
             print("Warnings:\n\t", end="")
-            print(*_WARNINGS, sep="\n\t")
+            print(*_WARNINGS, sep="\n\t", end="\n\n")
         if _ERRORS:
             print("Errors:\n\t", end="")
-            print(*_ERRORS, sep="\n\t")
+            print(*_ERRORS, sep="\n\t", end="\n\n")
 
         if not _BPY_FULL_REBUILD:
             import filecmp
