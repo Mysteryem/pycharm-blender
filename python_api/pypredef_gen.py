@@ -270,7 +270,6 @@ _BPY_PROPS_RETURN_HINTS = {
     'BoolVectorProperty': "type[bpy.types._generic_prop_array[bool]]",
     'EnumProperty': "type[str]",
     'FloatProperty': "type[float]",
-    'FloatVectorProperty': "type[_FloatVectorTypeAmalgamation]",
     'IntProperty': "type[int]",
     'IntVectorProperty': "type[bpy.types._generic_prop_array[int]]",
     'StringProperty': "type[str]",
@@ -321,10 +320,13 @@ import types
 import importlib
 import bpy
 import bpy_types
+import mathutils
 import rna_info
 import bmesh
 import argparse
 import shutil
+import re
+from itertools import chain
 from typing import Callable, Optional, Union, NamedTuple, Any
 from collections import defaultdict
 from enum import Enum
@@ -332,6 +334,66 @@ from enum import Enum
 # BMeshOpFunc type is not exposed directly by the current Blender API
 BMeshOpFuncType = type(bmesh.ops.split)
 NoneType = types.NoneType if hasattr(types, 'NoneType') else type(None)
+
+
+def _find_float_vector_prop_types(id_instance: bpy.types.ID) -> dict[type, dict[tuple[str, ...], list[range]]]:
+    """FloatVectorProperties change type based on the subtype and size, this function will try each combination,
+    observe the resulting type and then combine
+    An instance of ID (technically a Bone or PoseBone would work too) is required so that custom properties can be
+    added to its type and then retrieved from the instance. A type with few instances such as bpy.types.Scene is
+    recommended"""
+    subtypes = (
+        'COLOR', 'TRANSLATION', 'DIRECTION', 'VELOCITY', 'ACCELERATION', 'MATRIX', 'EULER', 'QUATERNION', 'AXISANGLE',
+        'XYZ', 'XYZ_LENGTH', 'COLOR_GAMMA', 'COORDINATES', 'LAYER', 'LAYER_MEMBER', 'NONE'
+    )
+
+    # TODO: In newer blender versions, this can be a Sequence of up to 3 ints for multiple dimensions.
+    #  When it's a sequence with more than one element, it looks like it always results in a bpy_prop_array, except when
+    #  the Sequence is [3,3] or [4,4] and subtype='MATRIX' and it results in a mathutils.Matrix
+    # min length is 1
+    # max length is 32
+    size_range = range(1, 33)
+
+    id_type = type(id_instance)
+
+    from itertools import groupby, product
+
+    resulting_types_for_each_arg_combination: dict[type, dict[str, list[int]]] = {}
+
+    # Iterate through the cartesian product of the subtypes and sizes and record the resulting type of the property for
+    # each combination
+    for subtype, size in product(subtypes, size_range):
+        id_type.pypredef_prop = bpy.props.FloatVectorProperty(size=size, subtype=subtype)
+        result_type = type(id_instance.pypredef_prop)
+        # if result_type != bpy.types.bpy_prop_array:
+        resulting_types_for_each_arg_combination.setdefault(result_type, {}).setdefault(subtype, []).append(size)
+
+    combinations: dict[type, dict[tuple[str, ...], list[range]]] = {}
+    # Iterate through the results and convert the lists of ints into lists of ranges and combine subtypes with the same
+    # ranges for each type
+    for result_type, result_type_dict in resulting_types_for_each_arg_combination.items():
+        result_type_combinations: dict[range, list[str]] = {}
+        for subtype, sizes in result_type_dict.items():
+            # Convert list of integers into ranges
+            for a, b in groupby(enumerate(sizes), lambda pair: pair[1] - pair[0]):
+                b = list(b)
+                range_from_ints = range(b[0][1], b[-1][1] + 1)
+                # Add subtype to list in dict keyed by the range
+                result_type_combinations.setdefault(range_from_ints, []).append(subtype)
+
+        final_results: dict[tuple[str, ...], list[range]] = {}
+        for r, subtype_list in result_type_combinations.items():
+            # Can't use a list as a key, so convert to tuple, we'll also sort to ensure we can't end up with subtypes
+            # in different orders
+            final_results.setdefault(tuple(sorted(subtype_list)), []).append(r)
+
+        combinations[result_type] = final_results
+
+    # Remove the property
+    if hasattr(id_type, 'pypredef_prop'):
+        del id_type.pypredef_prop
+
+    return combinations
 
 
 class FuncTypeEnum(Enum):
@@ -418,6 +480,8 @@ def get_full_type_name(type_: type, module_override=None) -> str:
             # Type comes from C, but isn't in builtins, so we'll have to guess as to where it can be found
             if hasattr(bpy.types, type_.__name__):
                 return "bpy.types." + type_.__name__
+            elif hasattr(mathutils, type_.__name__):
+                return "mathutils." + type_.__name__
             else:
                 raise RuntimeError(f"Unknown module for type: {type_}")
         return type_.__qualname__
@@ -1440,13 +1504,81 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
                 else:
                     declaration = declaration.replace("(", "(self, ", 1)
 
-        elif module_name == 'bpy.props' and hasattr(py_func, '__name__') and py_func.__name__ in _BPY_PROPS_RETURN_HINTS:
+        elif module_name == 'bpy.props' and hasattr(py_func, '__name__'):
             # This is a hack to add in type hints to bpy.props, it relies on extra typing imports added into the module
-            if py_func.__name__ == 'PointerProperty':
-                declaration = declaration.replace("type=None", "type: _T = None")
-            elif py_func.__name__ == 'CollectionProperty':
-                declaration = declaration.replace("type=None", "type: type[_T] = None")
-            declaration = declaration.replace("):", ") -> " + _BPY_PROPS_RETURN_HINTS[py_func.__name__] + ":")
+            if py_func.__name__ in _BPY_PROPS_RETURN_HINTS:
+                if py_func.__name__ == 'PointerProperty':
+                    declaration = declaration.replace("type=None", "type: _T = None")
+                elif py_func.__name__ == 'CollectionProperty':
+                    declaration = declaration.replace("type=None", "type: type[_T] = None")
+                declaration = declaration.replace("):", ") -> " + _BPY_PROPS_RETURN_HINTS[py_func.__name__] + ":")
+            elif py_func.__name__ == 'FloatVectorProperty':
+                # FloatVectorProperty changes type based on the subtype and size arguments. There are too many different
+                # combinations to
+                # Need to get an ID type instance to be able to check the float vector property types, the scene is a
+                # good candidate
+                scene = bpy.context.scene
+                extra_declarations = []
+
+                all_type_str = set()
+
+                # Get the default subtype string. Some redundancy is included in-case the documentation changes slightly
+                # in the future
+                subtype_re = re.compile(r"subtype\s*=\s*[\"']([^,]+)[\"']\s*,")
+                default_subtype = subtype_re.search(declaration).group(1)
+                # Get the default size value. Some redundancy is included in-case the documentation changes slightly in
+                # the future
+                size_re = re.compile(r"size\s*=\s*([^,]+)\s*,")
+                default_size = int(size_re.search(declaration).group(1))
+
+                for return_type, combinations in _find_float_vector_prop_types(scene).items():
+                    if return_type == bpy.types.bpy_prop_array:
+                        return_type_str = f"type[bpy.types._generic_prop_array[float]]"
+                    else:
+                        return_type_str = f"type[{get_full_type_name(return_type)}]"
+                    all_type_str.add(return_type_str)
+                    extra_declaration_common = declaration.replace("):", f") -> {return_type_str}:")
+                    for subtypes_list, range_list in combinations.items():
+                        subtype_arg_literal = "Literal[" + ", ".join(map(repr, subtypes_list)) + "]"
+                        size_arg_literal = "Literal[" + ", ".join(map(repr, chain.from_iterable(range_list))) + "]"
+
+                        # Overloads should only take default arguments when the default is available for that overload
+                        # e.g. "size: Literal[1]" cannot have the default argument of 3
+                        include_default_subtype = default_subtype in subtypes_list
+                        if include_default_subtype:
+                            subtype_overload_str = f"subtype: {subtype_arg_literal} = '\\1',"
+                        else:
+                            subtype_overload_str = f"subtype: {subtype_arg_literal},"
+
+                        include_default_size = any(default_size in r for r in range_list)
+                        if include_default_size:
+                            size_overload_str = f"size: {size_arg_literal} = \\1,"
+                        else:
+                            size_overload_str = f"size: {size_arg_literal},"
+
+                        if not include_default_subtype or not include_default_size:
+                            # If we've removed a default argument, we need to insert a '*' before that parameter
+                            # otherwise we end up with a non-default parameter after parameters with defaults.
+                            # Fortunately, bpy.props.FloatVectorProperty has every parameter with a default argument, so
+                            # the '*' can be inserted in-front of all the parameters.
+                            extra_declaration = extra_declaration_common.replace('(', '(*, ', 1)
+                        else:
+                            extra_declaration = str(extra_declaration_common)
+
+                        # Add the subtype overloads
+                        extra_declaration = re.sub(subtype_re, subtype_overload_str, extra_declaration, count=1)
+
+                        # Add the size overloads
+                        extra_declaration = re.sub(size_re, size_overload_str, extra_declaration, count=1)
+
+                        # Prepend the @overload decorator
+                        extra_declaration = "@overload\n" + extra_declaration + " ..."
+                        extra_declarations.append(extra_declaration)
+
+                implementation_return_str = "Union[" + ", ".join(sorted(all_type_str)) + "]"
+                implementation_declaration = declaration.replace("):", ") -> " + implementation_return_str + ":")
+                # Combine the overload declarations with the original implementation declaration
+                declaration = "\n".join(extra_declarations) + "\n" + implementation_declaration
 
         write_indented_lines(ident, fw, declaration, False)
     else:
@@ -1780,13 +1912,8 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
         # Extra imports and TypeVar creation
         # sys is used in default arguments for 'min' and 'max' parameters
         fw("import sys"
-           "\nfrom typing import TypeVar, Annotated  # added by pypredef_gen"
-           "\n_T = TypeVar('_T')  # added by pypredef_gen\n\n"
-           "class _FloatVectorTypeAmalgamation(bpy.types._generic_prop_array[float], mathutils.Vector,"
-           " mathutils.Matrix, mathutils.Euler, mathutils.Quaternion, mathutils.Color):"
-           "\n    \"\"\"Fake class added by pypredef_gen to work around PyCharm failing to correctly type annotations"
-           " that are set by a function that returns a Union of types\"\"\""
-           "\n    pass\n")
+           "\nfrom typing import TypeVar, Annotated, overload  # added by pypredef_gen"
+           "\n_T = TypeVar('_T')  # added by pypredef_gen\n\n")
 
     # Separator for end of module imports
     fw("\n")
