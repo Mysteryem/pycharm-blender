@@ -600,20 +600,16 @@ def rst2list(doc):
                          "name": argument's name (just to make the printing easier)
                          "type": argument's type (may be a class name)
                          "description": argument's description
-                         "ord": nr kolejny
                  ["@returns":]
                          optional: what function/property returns:
                          "description": description of the content
                          "type":        the name of returned type
-                         "ord": nr kolejny
                  ["@note":]
                          optional: note, added to description (below argument list)
                          "description": description of the content
-                         "ord": nr kolejny
                  ["@seealso":]
                          optional: reference, added to description (below argument list)
                          "description": description of the content
-                         "ord": nr kolejny
     '''
     def process_line(line, definition, last_entry):
         '''Helper function, that analyzes the line and tries to place the
@@ -660,9 +656,9 @@ def rst2list(doc):
             expr = line.split(" ",2)
             name = expr[1].rstrip(":")
             if len(expr) == 3:
-                definition.setdefault(name,{"name":name, "description":expr[2], "ord":len(definition)})
+                definition.setdefault(name,{"name":name, "description":expr[2]})
             else:
-                definition.setdefault(name,{"name":name, "description":"", "ord":len(definition)})
+                definition.setdefault(name,{"name":name, "description":""})
             last_entry = name
         elif line.startswith(":type:"): #property type
             expr = type_name(line)
@@ -671,7 +667,7 @@ def rst2list(doc):
         elif line.startswith(":return:"): #return description
             expr = line.split(" ",1)
             name = "@returns"
-            definition.setdefault(name,{"name": "returns", "description":expr[1], "ord":len(definition)})
+            definition.setdefault(name,{"name": "returns", "description":expr[1]})
             last_entry = name
         elif line.startswith(":rtype:"): #type, returned by the function
             expr = type_name(line)
@@ -688,12 +684,12 @@ def rst2list(doc):
         elif line.startswith(".. note:: "): #note to member description
             line = line.replace(".. note:: ","")
             name = "@note"
-            definition.setdefault(name,{"description":line, "ord":len(definition)})
+            definition.setdefault(name,{"description":line})
             last_entry = name
         elif line.startswith(".. seealso::"): #reference to external resource
             line = line.replace(".. seealso:: ","")
             name = "@seealso"
-            definition.setdefault(name,{"description":line, "ord":len(definition)})
+            definition.setdefault(name,{"description":line})
             last_entry = name
         elif line.startswith(".. literalinclude::"):
             pass #skip this line
@@ -709,7 +705,7 @@ def rst2list(doc):
     #--------------------------------- process_line
     lines = doc.split("\n")
     last_key = "@def"
-    definition = {last_key:{"description":"", "ord":0}} #at the beginning: empty description of function definition
+    definition = {last_key:{"description":""}} #at the beginning: empty description of function definition
 
     for line in lines:
         last_key = process_line(line,definition,last_key)
@@ -830,13 +826,12 @@ def rna2list(info):
                     # Annotate the type to indicate array shape and element mutability
                     return f"Annotated[{built_in_type}, {array_shape_annotation}]"
 
-    def get_argitem(arg, prev_ord, is_return=False):
+    def get_argitem(arg, is_return=False):
         '''Helper function, that creates an argument definition subdictionary
            Arguments:
            @arg (rna_info.InfoPropertyRNA): descriptor of the argument
-           @prev_ord (int): previous order index (to set the value for the "ord" key)
 
-           Returns: an definistion subdictionary (keys: "name", "type", "description", "ord")
+           Returns: an definistion subdictionary (keys: "name", "type", "description")
         '''
         if arg.fixed_type:
             arg_type = arg.fixed_type.identifier
@@ -860,30 +855,29 @@ def rna2list(info):
             description = arg.description + "\n" + _IDENT + description
 
         if is_return:
-            return {"name":"returns", "description":description, "type":type_name(arg_type, arg.fixed_type != None), "ord":(prev_ord + 1)}
+            return {"name":"returns", "description":description, "type":type_name(arg_type, arg.fixed_type != None)}
         else:
-            return {"name":arg.identifier, "description":description, "type":type_name(arg_type), "ord":(prev_ord + 1)}
+            return {"name":arg.identifier, "description":description, "type":type_name(arg_type)}
 
-    def get_return(returns, prev_ord):
+    def get_return(returns):
         '''Helper function, that creates the return definition subdictionary ("@returns")
            Arguments:
            @returns (list of rna_info.InfoPropertyRNA): descriptor of the return values
-           @prev_ord (int): previous order index (to set the value for the "ord" key)
 
-           Returns: an definistion subdictionary (keys: type", "description", "ord")
+           Returns: an definistion subdictionary (keys: type", "description")
         '''
         if len(returns) == 1:
-            return get_argitem(returns[0],prev_ord,is_return = True)
+            return get_argitem(returns[0],is_return = True)
         else: #many different values:
             description = "\n("
             for ret in returns:
-                item = get_argitem(ret, prev_ord, is_return = True)
+                item = get_argitem(ret, is_return = True)
                 description = description + "\n{0}{1}({2}):{3}".format(_IDENT, ret.identifier, item.pop("type"), item.pop("description"))
             #give just the description, not the type!
             description = description + "\n)"
-            return {"name":"returns", "description":description, "ord":(prev_ord + 1)}
+            return {"name":"returns", "description":description}
 
-    definition = {"@def":{"description":"", "ord":0}} #at the beginning: empty description of function definition
+    definition = {"@def":{"description":""}} #at the beginning: empty description of function definition
 
     if type(info) == rna_info.InfoStructRNA:
         py_class = info.py_class
@@ -1019,7 +1013,7 @@ def rna2list(info):
         if info.description:
             definition["@def"]["description"] = info.description
 
-        definition.setdefault("@returns",{"name" : "returns", "description" : info.get_type_description(as_ret = True), "ord" : 1})
+        definition.setdefault("@returns",{"name" : "returns", "description" : info.get_type_description(as_ret = True)})
 
     elif type(info) == rna_info.InfoFunctionRNA:
         # Add the classmethod decorator and append 'cls' to the argument for classmethod and append 'self' to the
@@ -1057,10 +1051,10 @@ def rna2list(info):
         definition["@def"]["description"] = info.description
         #append arguments:
         for arg in info.args:
-            definition.setdefault(arg.identifier, get_argitem(arg,len(definition)))
+            definition.setdefault(arg.identifier, get_argitem(arg))
         #append returns (operators have none):
         if info.return_values:
-            definition.setdefault("@returns",get_return(info.return_values,len(definition)))
+            definition.setdefault("@returns",get_return(info.return_values))
 
     elif type(info) == rna_info.InfoOperatorRNA:
         args_str = ", ".join(prop.get_arg_default(force=False) for prop in info.args)
@@ -1074,7 +1068,7 @@ def rna2list(info):
             definition["@def"]["description"] = "undocumented"
         #append arguments:
         for arg in info.args:
-            definition.setdefault(arg.identifier, get_argitem(arg,len(definition)))
+            definition.setdefault(arg.identifier, get_argitem(arg))
     else:
         raise TypeError("type was not InfoFunctionRNA, InfoStructRNA, InfoPropertyRNA or InfoOperatorRNA")
 
@@ -1176,7 +1170,7 @@ def doc2definition(doc,docstring_ident=_IDENT, module_name=None):
         '''Returns line of text, describing an argument or return statement
             Arguments:
             data (dictionary): a "subdictionary" of <definition>, describing single item:
-                                ("ord", "name", ["description"],["type"])
+                                ("name", ["description"],["type"])
         '''
         if "type" in data and "description" in data:
             return "@{name} ({type}): {description}".format(**data)
@@ -1282,9 +1276,9 @@ def doc2definition(doc,docstring_ident=_IDENT, module_name=None):
         # Disabled, it seems to break docstings from showing in PyCharm's Quick Documentation
         #write_indented_lines(ident,al,"Arguments:",False)
 
-        for tuple in sorted(definition.items(),key = lambda item: item[1]["ord"]): #sort the lines in the original sequence
+        for dict_descr in definition.values(): #sort the lines in the original sequence
             #first item of the <tuple> is the key, second - the value (dictionary describing a single element)
-            write_indented_lines(ident,al,format_arg(tuple[1]),False)
+            write_indented_lines(ident,al,format_arg(dict_descr),False)
         #end for
         al("\n")
 
@@ -2129,7 +2123,6 @@ def rna_function2predef(ident, fw, descr, is_bpy_op=False):
                            "PASS_THROUGH Pass Through – Do nothing and pass the event on.\n"
                            "INTERFACE Interface – Handled but not executed (popup menus).",
             "type": bpy_op_return,
-            "ord": len(definition) + 1,  # Not sure what this is, but the other functions for getting the return had it
         }
         definition.setdefault("@returns", return_description)
 
