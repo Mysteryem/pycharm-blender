@@ -1253,12 +1253,12 @@ def doc2definition(doc: Union[DefinitionParts, str, None], docstring_ident=_IDEN
         return_type = data.type
         description = data.description
         if return_type:
-            if description is not None:
+            if description:
                 return f"@{data.name} ({return_type}): {description}"
             else:
                 return f"@{data.name} ({return_type}): <not documented>"
         else:
-            if description is not None:
+            if description:
                 return f"@{data.name}: {description}"
             else:
                 return f"@{data.name}: <not documented>"
@@ -1458,7 +1458,9 @@ def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
             write_indented_lines(ident, fw, docstring, False)
 
         if returns:
-            write_indented_lines(ident+_IDENT, fw, "return ...", False)
+            # Don't include "return <type>", simply use "..." which is a common convention for method stubs, the actual
+            # return type is hinted in the definitions
+            write_indented_lines(ident+_IDENT, fw, "...", False)
         else:
             write_indented_lines(ident+_IDENT,fw,"pass",False)
 
@@ -1666,8 +1668,9 @@ def py_c_func2predef(ident, fw, module_name, type_name, identifier, py_func, is_
         write_indented_lines(ident, fw, docstring, False)
 
     if returns:
-        # write_indented_lines(ident+_IDENT,fw,"return " + definition["returns"],False)
-        write_indented_lines(ident+_IDENT,fw,"return ...", False)
+        # Don't include "return <type>", simply use "..." which is a common convention for method stubs, the actual
+        # return type is hinted in the definitions
+        write_indented_lines(ident+_IDENT, fw, "...", False)
     else:
         write_indented_lines(ident+_IDENT,fw,"pass",False)
 
@@ -1690,7 +1693,7 @@ def pyprop2predef(ident, fw, identifier, py_prop):
         declaration = identifier + " = None"    #we have to assign just something, to be properly parsed!
 
     # readonly properties use "data" directive, variables use "attribute" directive
-    if py_prop.fset is None: declaration = declaration + " # (readonly)"
+    if py_prop.fset is None: declaration = declaration + "  # (readonly)"
 
     fw(ident + declaration + "\n")
 
@@ -2220,8 +2223,9 @@ def rna_function2predef(ident, fw, descr, is_bpy_op=False):
 
     returns = definition.returns
     if returns:
-        # The return type is hinted by the declaration. Since this is a stub, return ...
-        write_indented_lines(ident+_IDENT, fw, "return ...", False)
+        # Don't include "return <type>", simply use "..." which is a common convention for method stubs, the actual
+        # return type is hinted in the definitions
+        write_indented_lines(ident+_IDENT, fw, "...", False)
     else:
         write_indented_lines(ident+_IDENT, fw, "pass", False)
 
