@@ -1382,7 +1382,7 @@ def doc2definition(doc: Union[DefinitionParts, str, None], docstring_ident=_IDEN
 
     return result
 
-def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
+def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None) -> bool:
     ''' Creates declaration of a function or class method
         Details:
         @ident (string): the required prefix (spaces)
@@ -1396,7 +1396,7 @@ def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
         if identifier not in attribute_defined_class.__dict__:
             # Skip functions that are not defined on this class, as this indicates that they are defined in one of the
             # class' bases and not overridden
-            return
+            return False
 
     # If the function is defined in a different module which is also included, reference the function
     func_module = getattr(py_func, '__module__', None)
@@ -1413,7 +1413,7 @@ def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None):
             fw(ident + f"{identifier} = {func_self_module}.{func_self.__qualname__}.{py_func.__name__}\n\n")
         else:
             fw(ident + f"{identifier} = {func_module}.{py_func.__name__}\n\n")
-        return
+        return True
     function_defined_class = getattr(py_func, '__self__', attribute_defined_class)
     try:
         signature = inspect.signature(py_func)
