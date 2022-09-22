@@ -2710,11 +2710,12 @@ def rna2predef(BASEPATH):
                 module = importlib.import_module(module_name)
             except ModuleNotFoundError as mnfe:
                 _ERRORS.append(str(mnfe))
-            if module_name == 'bgl':
-                # reloading bgl seems to get more of the functions to load
-                module = importlib.reload(module)
-            print("\n\n--- Generating predef for included module {}".format(module_name))
-            pymodule2predef(BASEPATH, module_name, module, "Module {}".format(module_name), visited)
+            else:
+                if module_name == 'bgl':
+                    # reloading bgl seems to get more of the functions to load
+                    module = importlib.reload(module)
+                print("\n\n--- Generating predef for included module {}".format(module_name))
+                pymodule2predef(BASEPATH, module_name, module, "Module {}".format(module_name), visited)
 
     del module
 
