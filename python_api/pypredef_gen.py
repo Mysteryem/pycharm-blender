@@ -970,12 +970,12 @@ def rna2list(info) -> DefinitionParts:
         module_overrides = []
 
         if (
-            isinstance(py_class, (bpy.types.bpy_struct_meta_idprop, bpy_types.RNAMeta))
-            # Skip if the module isn't included, otherwise we can't reference it
-            and is_included(py_class)
-            # Skip if the struct class is not accessible from its module
-            and py_class.__module__ in sys.modules
-            and hasattr(sys.modules[py_class.__module__], py_class.__qualname__)
+                is_rna_metaclass(py_class)
+                # Skip if the module isn't included, otherwise we can't reference it
+                and is_included(py_class)
+                # Skip if the struct class is not accessible from its module
+                and py_class.__module__ in sys.modules
+                and hasattr(sys.modules[py_class.__module__], py_class.__qualname__)
         ):
             if py_class.__module__ != "bpy.types":
                 # Structs that have a type that uses the bpy_struct_meta_idprop metaclass are often combined with an
@@ -1004,10 +1004,7 @@ def rna2list(info) -> DefinitionParts:
                     bases.append(py_base)
                     # If the base is a class we've replaced with a fake class extending the real class, change the base
                     # to the fake class
-                    if (
-                            isinstance(py_base, (bpy.types.bpy_struct_meta_idprop, bpy_types.RNAMeta))
-                            and py_base.__module__ != "bpy.types"
-                    ):
+                    if is_rna_metaclass(py_base) and py_base.__module__ != "bpy.types":
                         module_overrides.append("bpy.types")
                     else:
                         module_overrides.append(None)
@@ -2232,6 +2229,22 @@ def rna_function2predef(ident, fw, descr, is_bpy_op=False):
     fw("\n")
 
 
+def is_rna_metaclass(py_class):
+    """Helper function to check if an rna_struct's py_class is a metaclass using class or is otherwise combined with a
+    Python base class"""
+    # Generally the base metaclass using types are in bpy_types, but subclasses could be anywhere
+    if isinstance(py_class, (bpy.types.bpy_struct_meta_idprop, bpy_types.RNAMeta)):
+        return True
+    # The class Context, Gizmo, GizmoGroup, Macro, MeshEdge, MeshLoopTriangle and MeshPolygon don't use a metaclass, yet
+    # they still become the base class for an rna_struct.
+    # Perhaps there is a better way to detect such cases. We can't check if the class is a python defined class (has the
+    # __code__ attribute) because that would also pick up subclasses such as most UI Panels and Menus
+    if py_class.__module__ == 'bpy_types':
+        return True
+    else:
+        return False
+
+
 def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=False, module_name=None):
     ''' Creates declaration of a bpy structure
         Details:
@@ -2249,9 +2262,9 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
             # Make sure it isn't a custom metaclass type that usually combines the struct with a class in bpy_types,
             # otherwise we lose all the properties/etc. defined in the struct
             class_module_prefix = get_top_level_module(class_module)
-            # Can the class actually be access from the module it claims it belongs to?
+            # Can the class actually be accessed from the module it claims it belongs to?
             accessible = class_module in sys.modules and hasattr(sys.modules[class_module], py_class.__qualname__)
-            if not isinstance(py_class, (bpy.types.bpy_struct_meta_idprop, bpy_types.RNAMeta)) and accessible:
+            if not is_rna_metaclass(py_class) and accessible:
                 if class_module_prefix in INCLUDE_MODULES:
                     if descr.identifier == py_class.__name__:
                         fw(ident + f"from {class_module} import {py_class.__name__}\n")
