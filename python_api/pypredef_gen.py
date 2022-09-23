@@ -917,6 +917,14 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
             arg_type = arg.fixed_type.identifier
         else:
             arg_type = arg.type
+        if arg_type == 'enum':
+            if arg.enum_items:
+                arg_type = "Literal[" + ", ".join("'" + i[0] + "'" for i in arg.enum_items) + "]"
+            else:
+                arg_type = 'str'
+            if arg.is_enum_flag:
+                # Confusingly named flag, but indicates that the property is a set of enum values
+                arg_type = "set[" + arg_type + "]"
         if is_return:
             description = arg.get_type_description(as_ret = True) #without default value!
         else:
@@ -1050,6 +1058,9 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
                 prop_type = "Literal[" + ", ".join("'" + i[0] + "'" for i in info.enum_items) + "]"
             else:
                 prop_type = 'str'
+            if info.is_enum_flag:
+                # Confusingly named flag, but indicates that the property is a set of enum values
+                prop_type = "set[" + prop_type + "]"
             # bpy.types.CacheFile.velocity_unit also has a collection_type (bpy.types.AlembicObjectPaths)
             if info.collection_type:
                 print("{} is an enum, but it also has the collection_type {}. Ignoring the collection_type".format(
