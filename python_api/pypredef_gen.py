@@ -616,6 +616,7 @@ class Definition(NamedTuple):
     docstring: str
     declaration: str = None
     returns: str = None
+    returns_comment: str = None
     function_type: str = None
 
 
@@ -1083,7 +1084,7 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
                                       built_in_type, collection_element_type)
         if extra_property_types and property_type_str not in extra_property_types:
             property_type_str = "Union[" + ", ".join(chain([property_type_str], extra_property_types)) + "]"
-        prototype = "{0}: {1}".format(
+        prototype = "{0}: {1} = ...".format(
             info.identifier,
             property_type_str)
         if info.is_readonly:
@@ -1294,11 +1295,25 @@ def doc2definition(doc: Union[DefinitionParts, str, None], docstring_ident=_IDEN
         function_type = _def.function_type
         decorator = _def.decorator
         hint = _def.hint
+        if not rtype:
+            rtype = _def.return_type
     else:
         declaration = None
         function_type = None
         decorator = None
         hint = None
+
+    rtype_comment = None
+    if rtype:
+        # Some type aberrations have comments, which will need to go after the ":" at the end
+        comment_start = rtype.find("#")
+        if comment_start != -1:
+            rtype_stripped = rtype[:comment_start].strip()
+            rtype_stripped = guess_prefixed_type(rtype_stripped)
+            rtype_comment = rtype[comment_start:]
+            rtype = rtype_stripped
+        else:
+            rtype = guess_prefixed_type(rtype.strip())
 
     if declaration:
         decorator = decorator if decorator else ""
@@ -1315,16 +1330,7 @@ def doc2definition(doc: Union[DefinitionParts, str, None], docstring_ident=_IDEN
             pass #no prefix needed
         else:
             if rtype:
-                # Some type aberrations have comments, which will need to go after the ":" at the end
-                comment_start = rtype.find("#")
-                if comment_start != -1:
-                    rtype_stripped = rtype[:comment_start].strip()
-                    rtype_stripped = guess_prefixed_type(rtype_stripped)
-                    rtype_comment = rtype[comment_start:]
-                    declaration = decorator + "def " + declaration + " -> " + rtype_stripped + ":  " + rtype_comment
-                else:
-                    rtype = guess_prefixed_type(rtype.strip())
-                    declaration = decorator + "def " + declaration + " -> " + rtype + ":"
+                declaration = decorator + "def " + declaration + " -> " + rtype + ":"
             else:
                 declaration = decorator + "def " + declaration + ":"
     elif rtype:
@@ -1377,7 +1383,8 @@ def doc2definition(doc: Union[DefinitionParts, str, None], docstring_ident=_IDEN
         write_indented_lines(ident, al, "This class has a fake class added by pypredef_gen in its bases", False)
 
     docstring = docstring_ident + "\"\"\"" + "".join(lines) + docstring_ident + "\"\"\"\n"
-    result = Definition(docstring=docstring, declaration=declaration, returns=rtype, function_type=function_type)
+    result = Definition(docstring=docstring, declaration=declaration, returns=rtype, returns_comment=rtype_comment,
+                        function_type=function_type)
 
     return result
 
@@ -1441,12 +1448,9 @@ def pyfunc2predef(ident, fw, identifier, py_func, attribute_defined_class=None) 
             arg_str = arg_str.replace("<class '", "").replace("'>", "")
             fmt = ident + "def %s%s"
             if returns:
-                # Some type amalgamations have comments, move them after the ":" at the end
-                comment_start = returns.find("#")
-                if comment_start != -1:
-                    returns_stripped = returns[:comment_start].rstrip()
-                    returns_comment = returns[comment_start:]
-                    fmt += " -> " + returns_stripped + ":  " + returns_comment + "\n"
+                returns_comment = definition.returns_comment
+                if returns_comment:
+                    fmt += " -> " + returns + ":  " + returns_comment + "\n"
                 else:
                     fmt += " -> " + returns + ":\n"
             else:
@@ -1489,10 +1493,13 @@ def py_descr2predef(ident, fw, descr, module_name, type_name, identifier):
     if isinstance(descr, (types.GetSetDescriptorType, types.MemberDescriptorType)): #an attribute of the module or class
         definition = doc2definition(descr.__doc__,"", module_name=module_name) #parse the eventual RST sphinx markup
         returns = definition.returns
+        returns_comment = definition.returns_comment
         if not returns:
             returns = "None"  # we have to assign just something, to be properly parsed!
-
-        fw(ident + identifier + " : " + returns + "\n")
+        line = ident + identifier + ": " + returns + " = ..."
+        if returns_comment:
+            line += "  " + returns_comment
+        fw(line + "\n")
 
         docstring = definition.docstring
         if docstring:
@@ -1688,6 +1695,9 @@ def pyprop2predef(ident, fw, identifier, py_prop):
     returns = definition.returns
     if returns:
         declaration = identifier + " = " + returns
+        returns_comment = definition.returns_comment
+        if returns_comment:
+            declaration += "  " + returns_comment
     else:
         declaration = identifier + " = None"    #we have to assign just something, to be properly parsed!
 
@@ -2463,7 +2473,7 @@ def write_context_properties(ident: str, fw: Callable[[str], None], rna_properti
         lines = (
             # PyCharm won't show the docstring in Quick Documentation unless there's an assigned value, so we assign
             # to ...
-            f"{attribute_name}: {type_str}  # (read-only)\n"
+            f"{attribute_name}: {type_str} = ...  # (read-only)\n"
             f'"""{contexts_str}"""\n'
         )
         write_indented_lines(ident, fw, lines)
