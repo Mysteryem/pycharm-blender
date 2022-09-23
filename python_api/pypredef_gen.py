@@ -162,16 +162,12 @@ EXCLUDE_MODULES = {
 ATTRIBUTES_AS_SUBMODULES = {
     "bpy": {
         "app",
-        # The current context instance tends to have many more attributes than bpy.types.Context, creating a fake module
-        # from the current instance will produce predefenitions for many extra attributes
-        "context",
     },
 }
 
 # Modules/submodules that will include all attributes, initialised to None if the type can't be represented
 DOCUMENT_ALL_ATTRIBUTES_MODULES = {
     "bpy",
-    "bpy.context",
     "bgl",
 }
 
@@ -803,7 +799,7 @@ def get_item(dictionary,key):
     else:
         return None
 
-def rna2list(info) -> DefinitionParts:
+def rna2list(info, extra_property_types=()) -> DefinitionParts:
     ''' Prepares list of definition elements
         Arguments:
         @info (one of rna_info.Info*RNA types) - the descriptor of Struct, Operator, Function or Property
@@ -1083,10 +1079,13 @@ def rna2list(info) -> DefinitionParts:
                         built_in_type = _PROP_ARRAY_SUBTYPE_TO_CLASS[bl_prop.subtype]
                     array_dimensions = bl_prop.array_dimensions
 
+        property_type_str = type_name(prop_type, info.fixed_type is not None, array_dimensions, info.is_readonly,
+                                      built_in_type, collection_element_type)
+        if extra_property_types and property_type_str not in extra_property_types:
+            property_type_str = "Union[" + ", ".join(chain([property_type_str], extra_property_types)) + "]"
         prototype = "{0}: {1}".format(
             info.identifier,
-            type_name(prop_type, info.fixed_type is not None, array_dimensions, info.is_readonly, built_in_type,
-                      collection_element_type))
+            property_type_str)
         if info.is_readonly:
             prototype = prototype + "  # (read only)"
 
@@ -1233,7 +1232,8 @@ def rst_module_to_rst_dict(file_contents: str):
     return module_name, module_rst, function_rst_dict, class_rst_dict
 
 
-def doc2definition(doc: Union[DefinitionParts, str, None], docstring_ident=_IDENT, module_name=None) -> Definition:
+def doc2definition(doc: Union[DefinitionParts, str, None], docstring_ident=_IDENT, module_name=None,
+                   extra_docstring_lines=()) -> Definition:
     '''Method converts given doctext into declaration and docstring comment
     Details:
     @doc (DefinitionParts or string) - the documentation text of the member (preferably in sphinx RST syntax)
@@ -1367,6 +1367,8 @@ def doc2definition(doc: Union[DefinitionParts, str, None], docstring_ident=_IDEN
 
     if not lines:
         lines.append("<not documented>\n")
+
+    lines += extra_docstring_lines
 
     if _def.is_fake_class:
         write_indented_lines(ident, al, "This is a fake class added by pypredef_gen", False)
@@ -2167,14 +2169,15 @@ class _persistent:
 
     file.close()
 
-def rna_property2predef(ident, fw, descr):
+def rna_property2predef(ident, fw, descr, alternative_types=(), extra_docstring=()):
     ''' Creates declaration of a property
         Details:
         @ident (string): the required prefix (spaces)
         @fw (function): the unified shortcut to print() or file.write() function
         @descr (rna_info.InfoPropertyRNA): descriptor of the property
     '''
-    definition = doc2definition(rna2list(descr),docstring_ident="")
+    def_parts = rna2list(descr, extra_property_types=alternative_types)
+    definition = doc2definition(def_parts, docstring_ident="", extra_docstring_lines=extra_docstring)
     write_indented_lines(ident, fw, definition.declaration, False)
 
     docstring = definition.docstring
@@ -2245,6 +2248,227 @@ def is_rna_metaclass(py_class):
         return False
 
 
+def write_context_properties(ident: str, fw: Callable[[str], None], rna_properties: list[rna_info.InfoPropertyRNA]):
+    # Context attributes copied from https://docs.blender.org/api/current/bpy.context.html as of Blender 3.3.1
+    buttons_context_attributes = {
+        "texture_slot": "TextureSlot",
+        "scene": "Scene",
+        "world": "World",
+        "object": "Object",
+        "mesh": "Mesh",
+        "armature": "Armature",
+        "lattice": "Lattice",
+        "curve": "Curve",
+        "meta_ball": "MetaBall",
+        "light": "Light",
+        "speaker": "Speaker",
+        "lightprobe": "LightProbe",
+        "camera": "Camera",
+        "material": "Material",
+        "material_slot": "MaterialSlot",
+        "texture": "Texture",
+        "texture_user": "ID",
+        "texture_user_property": "Property",
+        "bone": "Bone",
+        "edit_bone": "EditBone",
+        "pose_bone": "PoseBone",
+        "particle_system": "ParticleSystem",
+        "particle_system_editable": "ParticleSystem",
+        "particle_settings": "ParticleSettings",
+        "cloth": "ClothModifier",
+        "soft_body": "SoftBodyModifier",
+        "fluid": "FluidSimulationModifier",
+        "collision": "CollisionModifier",
+        "brush": "Brush",
+        "dynamic_paint": "DynamicPaintModifier",
+        "line_style": "FreestyleLineStyle",
+        "collection": "LayerCollection",
+        "gpencil": "GreasePencil",
+        "curves": "Curves",
+        "volume": "Volume",
+    }
+    clip_context_attributes = {
+        "edit_movieclip": "MovieClip",
+        "edit_mask": "Mask",
+    }
+    file_context_attributes = {
+        "active_file": "FileSelectEntry",
+        "selected_files": ["FileSelectEntry"],
+        "asset_library_ref": "AssetLibraryReference",
+        "selected_asset_files": "FileSelectEntry",
+        "id": "ID",
+    }
+    image_context_attributes = {
+        "edit_image": "Image",
+        "edit_mask": "Mask",
+    }
+    node_context_attributes = {
+        "selected_nodes": ["Node"],
+        "active_node": "Node",
+        "light": "Light",
+        "material": "Material",
+        "world": "World",
+    }
+    screen_context_attributes = {
+        "scene": "Scene",  # scene is already available in all contexts though...
+        "view_layer": "ViewLayer",  # view_layer is already available in all contexts though...
+        "visible_objects": ["Object"],
+        "selectable_objects": ["Object"],
+        "selected_objects": ["Object"],
+        "editable_objects": ["Object"],
+        "selected_editable_objects": ["Object"],
+        "objects_in_mode": ["Object"],
+        "objects_in_mode_unique_data": ["Object"],
+        "visible_bones": ["EditBone"],
+        "editable_bones": ["EditBone"],
+        "selected_bones": ["EditBone"],
+        "selected_editable_bones": ["EditBone"],
+        "visible_pose_bones": ["PoseBone"],
+        "selected_pose_bones": ["PoseBone"],
+        "selected_pose_bones_from_active_object": ["PoseBone"],
+        "active_bone": "EditBone",
+        "active_pose_bone": "PoseBone",
+        "active_object": "Object",
+        "object": "Object",
+        "edit_object": "Object",
+        "sculpt_object": "Object",
+        "vertex_paint_object": "Object",
+        "weight_paint_object": "Object",
+        "image_paint_object": "Object",
+        "particle_edit_object": "Object",
+        "pose_object": "Object",
+        "active_sequence_strip": "Sequence",
+        "sequences": ["Sequence"],
+        "selected_sequences": ["Sequence"],
+        "selected_editable_sequences": ["Sequence"],
+        "active_nla_track": "NlaTrack",
+        "active_nla_strip": "NlaStrip",
+        "selected_nla_strips": ["NlaStrip"],
+        "selected_movieclip_tracks": ["MovieTrackingTrack"],
+        "gpencil_data": "GreasePencil",
+        "gpencil_data_owner": "ID",
+        "annotation_data": "GreasePencil",
+        "annotation_data_owner": "ID",
+        "visible_gpencil_layers": ["GPencilLayer"],
+        "editable_gpencil_layers": ["GPencilLayer"],
+        "editable_gpencil_strokes": ["GPencilStroke"],
+        "active_gpencil_layer": ["GPencilLayer"],  # Layer singular, but is a sequence?
+        "active_gpencil_frame": ["GPencilLayer"],  # Layer singular, but is a sequence? # Documented as GreasePencilLayer
+        "active_annotation_layer": "GPencilLayer",
+        "active_operator": "Operator",
+        "active_action": "Action",
+        "selected_visible_actions": ["Action"],
+        "selected_editable_actions": ["Action"],
+        "visible_fcurves": ["FCurve"],
+        "editable_fcurves": ["FCurve"],
+        "selected_visible_fcurves": ["FCurve"],
+        "selected_editable_fcurves": ["FCurve"],
+        "active_editable_fcurves": "FCurve",
+        "selected_editable_keyframes": ["Keyframe"],
+        "ui_list": "UIList",
+        "asset_library_ref": "AssetLibraryReference",
+    }
+    sequencer_context_attributes = {
+        "edit_mask": "Mask",
+    }
+    text_context_attributes = {
+        "edit_text": "Text",
+    }
+    view3d_context_attributes = {
+        "active_object": "Object",
+        "selected_ids": ["ID"],
+    }
+    context_attributes = [
+        (buttons_context_attributes, "Buttons"),
+        (clip_context_attributes, "Clip"),
+        (file_context_attributes, "File"),
+        (image_context_attributes, "Image"),
+        (node_context_attributes, "Node"),
+        (screen_context_attributes, "Screen"),
+        (sequencer_context_attributes, "Sequencer"),
+        (text_context_attributes, "Text"),
+        (view3d_context_attributes, "View3D"),
+    ]
+    always_available_attributes = {prop.identifier: prop for prop in rna_properties}
+    all_context_attributes: dict[str, tuple[set[str], set[str]]] = {}
+    conflict_attributes: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for attributes_dict, context_type in context_attributes:
+        for attribute_name, attribute_type_str in attributes_dict.items():
+            is_sequence = False
+            if isinstance(attribute_type_str, list):
+                is_sequence = True
+                attribute_type_str = attribute_type_str[0]
+
+            if not hasattr(bpy.types, attribute_type_str):
+                warning_part = "in a sequence as" if is_sequence else "as"
+                _WARNINGS.append(f"Could not find bpy.types.{attribute_type_str} available {warning_part}"
+                                 f" bpy.types.Context.{attribute_name} for '{context_type}' contexts (it may be"
+                                 f" from a newer Blender version)")
+                continue
+
+            processed_attributes_dict = all_context_attributes
+            conflict = False
+            # Check if the attribute is always available due to being an rna property
+            if attribute_name in always_available_attributes:
+                existing_attribute = always_available_attributes[attribute_name]
+                # If the type matches, we'll just skip it
+                if existing_attribute.fixed_type and existing_attribute.fixed_type.identifier == attribute_type_str:
+                    print(f"Skipping bpy.types.Context attribute {attribute_name} from {context_type} contexts as it is"
+                          f" available in all contexts with the same type")
+                    continue
+                # If the type doesn't match, add it to the conflict dict instead. Conflicts information will be added to
+                # the standard rna property
+                else:
+                    conflict = True
+
+            attribute_type_str = "bpy.types." + attribute_type_str
+            if is_sequence:
+                attribute_type_str = f"Sequence[{attribute_type_str}]"
+
+            if conflict:
+                conflict_attributes[attribute_name].append((attribute_type_str, context_type))
+            else:
+                types_set, context_type_set = all_context_attributes.setdefault(attribute_name, (set(), set()))
+                types_set.add(attribute_type_str)
+                context_type_set.add(context_type)
+
+    for prop in rna_properties:
+        if prop.identifier in conflict_attributes:
+            type_context_type_pairs = conflict_attributes[prop.identifier]
+            extra_docstring_lines = []
+            for type_str, context_type in type_context_type_pairs:
+                extra_docstring_lines.append(f"When the context is a {context_type} context, the type is {type_str}\n")
+            rna_property2predef(ident, fw, prop, alternative_types=[p[0] for p in type_context_type_pairs],
+                                extra_docstring=extra_docstring_lines)
+        else:
+            rna_property2predef(ident, fw, prop)
+
+    for attribute_name, (attribute_types, attribute_contexts) in sorted(all_context_attributes.items(), key=lambda t: t[0]):
+        if attribute_name in conflict_attributes:
+            # Already covered by the main attribute documentation
+            continue
+
+        if len(attribute_types) > 1:
+            # There currently aren't any attributes in multiple context types that can have a different type in
+            # different contexts, there probably won't be in the future either, since it's confusing
+            type_str = f"Union[{', '.join(sorted(attribute_types))}]"
+        else:
+            type_str = next(iter(attribute_types))
+        if len(attribute_contexts) > 1:
+            sorted_contexts = sorted(attribute_contexts)
+            contexts_str_part = ', '.join(sorted_contexts[:-1]) + " and " + sorted_contexts[-1]
+        else:
+            contexts_str_part = next(iter(attribute_contexts))
+        contexts_str = contexts_str_part + " contexts only"
+        lines = (
+            # PyCharm won't show the docstring in Quick Documentation unless there's an assigned value, so we assign
+            # to ...
+            f"{attribute_name}: {type_str}  # (read-only)\n"
+            f'"""{contexts_str}"""\n'
+        )
+        write_indented_lines(ident, fw, lines)
+
+
 def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=False, module_name=None):
     ''' Creates declaration of a bpy structure
         Details:
@@ -2304,8 +2528,12 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
 
     rna_properties = descr.properties
     rna_properties.sort(key= lambda prop: prop.identifier)
-    for prop in rna_properties:
-        rna_property2predef(ident,fw,prop)
+    # Extra properties for bpy.types.Context
+    if descr.identifier == 'Context' and descr.py_class == bpy.types.Context:
+        write_context_properties(ident, fw, rna_properties)
+    else:
+        for prop in rna_properties:
+            rna_property2predef(ident,fw,prop)
 
     #Python properties
     py_properties = descr.get_py_properties()
