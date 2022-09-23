@@ -905,6 +905,8 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
 
     @overload
     def get_argitem(arg: rna_info.InfoPropertyRNA, is_return: Literal[True]) -> ReturnsLine: ...
+    @overload
+    def get_argitem(arg: rna_info.InfoPropertyRNA, is_return: Literal[False] = False) -> ArgumentLine: ...
 
     def get_argitem(arg: rna_info.InfoPropertyRNA, is_return: bool = False) -> ArgumentLine:
         '''Helper function, that creates an argument definition subdictionary
@@ -942,10 +944,12 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
         if arg.description:
             description = arg.description + "\n" + _IDENT + description
 
+        arg_type = type_name(arg_type, arg.fixed_type is not None)
+
         if is_return:
-            return ReturnsLine(description=description, type=type_name(arg_type, arg.fixed_type is not None))
+            return ReturnsLine(description=description, type=arg_type)
         else:
-            return ArgumentLine(name=arg.identifier, description=description, type=type_name(arg_type))
+            return ArgumentLine(name=arg.identifier, description=description, type=arg_type)
 
     def get_return(returns: tuple[rna_info.InfoPropertyRNA, ...]) -> ReturnsLine:
         '''Helper function, that creates the return definition subdictionary ("@returns")
@@ -1129,19 +1133,29 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
         # argument (has a default value), append '*' before the required argument for the first occurrence of such
         first_not_required = None
         first_required_after_not_required = None
-        for i, prop in enumerate(info.args):
+        for i, arg in enumerate(info.args):
             if first_not_required is None:
-                if not prop.is_required:
+                if not arg.is_required:
                     first_not_required = i
             elif first_required_after_not_required is None:
-                if prop.is_required:
+                if arg.is_required:
                     first_required_after_not_required = i
                     # The next argument to append doesn't have a default value, but it comes after arguments that do so
                     # '*' must be appended beforehand to signify that all arguments without default values after this
                     # point are required to be specified by name
                     arg_strings.append('*')
             # Append the next argument with its default value if it exists
-            arg_strings.append(prop.get_arg_default(force=False))
+            arg_line = get_argitem(arg)
+            arg_string = f"{arg_line.name}: {arg_line.type}"
+            # Add default argument if the argument is not required
+            prop_default = arg.default_str
+            if not arg.is_required and prop_default:
+                arg_string += f" = {prop_default}"
+
+            # Append argument to prototype arg strings
+            arg_strings.append(arg_string)
+            # Append argument to argument defs
+            definition.argument_defs.setdefault(arg.identifier, arg_line)
         args_str = ", ".join(arg_strings)
         prototype = "{0}({1})".format(info.identifier, args_str)
         if definition_def.prototype is None:
@@ -1149,9 +1163,6 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
         if definition_def.hint is None:
             definition_def.hint = "function"
         definition_def.description = info.description
-        #append arguments:
-        for arg in info.args:
-            definition.argument_defs.setdefault(arg.identifier, get_argitem(arg))
         #append returns (operators have none):
         if info.return_values:
             definition.returns_def = get_return(info.return_values)
