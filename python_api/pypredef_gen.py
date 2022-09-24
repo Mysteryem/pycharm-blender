@@ -1168,8 +1168,88 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
             definition.returns_def = get_return(info.return_values)
 
     elif isinstance(info, rna_info.InfoOperatorRNA):
-        args_str = ", ".join(prop.get_arg_default(force=False) for prop in info.args)
-        prototype = "{0}({1})".format(info.func_name, args_str)
+        # Unfortunately, new TypedDict instances declared within an annotation don't work with PyCharm, instead they
+        # need to be declared separately first, and then they can be used in annotations.
+        # We'll add these declarations to this list so that they can be printed before the Operator itself.
+        extra_preceding_lines = []
+
+        def operator_arg_to_string(arg: rna_info.InfoPropertyRNA) -> str:
+            if arg.fixed_type:
+                arg_class = arg.fixed_type.py_class
+                if issubclass(arg_class, bpy.types.OperatorProperties) and not hasattr(bpy.types, arg_class.__name__):
+                    # When operators have an argument which is an OperatorProperties subclass they seem to take a
+                    # dictionary for that argument whereby the dictionary's elements correspond to the properties of the
+                    # Operator with the same name as the OperatorProperties
+                    # Get the InfoOperatorRNA dict
+                    _, _, ops, _ = get_rna_info()
+                    # Get the name and key for the operator
+                    orig_arg_type_name = arg.fixed_type.identifier
+                    op_key = ('', orig_arg_type_name)
+                    if op_key in ops:
+                        other_op_info = ops[op_key]
+
+                        op_args = []
+                        op_args_types = []
+                        # Iterate through the arguments of this other operator
+                        for op_arg in other_op_info.args:
+                            line = get_argitem(op_arg)
+
+                            # Gather the default arguments so that they can be supplied in a dict default argument
+                            op_args.append(f"'{op_arg.identifier}': {op_arg.default_str}")
+                            # Gather the types of each argument so that they can be supplied to a TypedDict
+                            op_args_types.append(f"'{op_arg.identifier}': {line.type}")
+
+                        # Combine the default arguments into the string representation of a dictionary
+                        op_args = ", ".join(op_args)
+                        op_args = "{" + op_args + "}"
+
+                        # Combine the argument types into the string representation of a dictionary
+                        op_args_types = ", ".join(op_args_types)
+                        op_args_types = "{" + op_args_types + "}"
+
+                        # Create a unique identifier based on operator function name and the original argument type.
+                        # Because the Operator functions will have unique names (otherwise they would overwrite one
+                        # another), this will be unique so long as the same OperatorProperties is not repeated for
+                        # multiple arguments
+                        typed_dict_identifier = "_" + info.func_name + "_" + orig_arg_type_name
+                        # Definition line for the TypedDict that will be referenced in the type annotation for this arg
+                        typed_dict_definition = f"{typed_dict_identifier} = TypedDict('{typed_dict_identifier}', {op_args_types}, total=False)\n"
+                        extra_preceding_lines.append(typed_dict_definition)
+
+                        # The arguments are optional, replacing the defaults when supplied
+                        arg_str = f"{arg.identifier}: {typed_dict_identifier} = {op_args}"
+                        return arg_str
+            line = get_argitem(arg)
+            arg_str = f"{line.name}: {line.type}"
+            # Add default argument if the argument is not required
+            arg_default = arg.default_str
+            if not arg.is_required and arg_default:
+                arg_str += f" = {arg_default}"
+            return arg_str
+        # Convert the list of arguments into a string, including type, defaults and special handling of
+        # OperatorProperties subclasses
+        args_str = ", ".join(map(operator_arg_to_string, info.args))
+        # Add Operator specific, positional-only parameters
+        # Default arguments are found in <blender install dir>\<blender version>\scripts\modules\bpy\ops.py in
+        # _BPyOpsSubModOp._parse_args as the C_dict, C_exec and C_undo variables
+        operator_args = (f"override_context: dict[str, Any] = None,"
+                         # _ExecutionContext is defined at the top of each Operator module to reduce the number of times
+                         # it is repeated
+                         f" execution_context: _ExecutionContext = 'EXEC_DEFAULT',"
+                         # Technically any int is allowed, but bool makes more sense
+                         f" undo: bool = False, /")
+        # Finalise the prototype string
+        if args_str:
+            prototype_args = f"{operator_args}, *, " + args_str
+        else:
+            prototype_args = operator_args
+        prototype = f"{info.func_name}({prototype_args})"
+        if extra_preceding_lines:
+            # For now, re-use the decorator attribute to get any TypedDict definitions to be written prior to the
+            # operator
+            extra_preceding_lines = "".join(extra_preceding_lines)
+            # Some extra newlines for spacing, not required.
+            definition_def.decorator = "\n" + extra_preceding_lines + "\n\n"
         if definition_def.prototype is None:
             definition_def.prototype = prototype
         if definition_def.hint is None:
@@ -2239,13 +2319,6 @@ def rna_function2predef(ident, fw, descr, is_bpy_op=False):
     definition = doc2definition(definition)
 
     declaration = definition.declaration
-    if is_bpy_op:
-        # bpy.op functions take 3 optional positional arguments, in the form of
-        # override_context: dict, execution_context: str, undo: bool
-        # but these cannot be specified by name, so we must present them as *args
-        # Insert the *args parameter into the declaration
-        no_existing_args = declaration.find('()') != -1
-        declaration = declaration.replace('(', "(*args: Union[dict, str, bool]" if no_existing_args else "(*args: Union[dict, str, bool], ", 1)
 
     write_indented_lines(ident,fw,declaration,False) #may contain two lines: decorator and declaration
 
@@ -2596,6 +2669,7 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
         all_attributes.update(func[0] for func in py_functions)
         return all_attributes
 
+
 def ops_struct2predef(ident, fw, module, operators):
     ''' Creates "pseudostructure" for a given module of operators
         Details:
@@ -2604,11 +2678,17 @@ def ops_struct2predef(ident, fw, module, operators):
         @module (string): one of bpy.ops names ("actions", for example)
         @operators (list of rna_info.InfoOperatorRNA): operators, grouped in this module
     '''
-    fw("from typing import Literal, Union\n\n")
-    # fmt = ident + "class {0}:\n"
-    # fw(fmt.format(module)) #"action" -> "class action:\n"
-    # ident = ident+_IDENT
-    # fw(ident+"'''Special class, created just to reflect content of bpy.ops.{0}'''\n\n".format(module))
+    # Common imports and setup for Operator submodules
+    docstring = f'"""Special module created to reflect the content of bpy.ops.{module}"""\n\n'
+    # Copied from https://docs.blender.org/api/current/bpy.ops.html#execution-context
+    execution_context_literal = ("Literal['INVOKE_DEFAULT', 'INVOKE_REGION_WIN', 'INVOKE_REGION_CHANNELS',"
+                                 " 'INVOKE_REGION_PREVIEW', 'INVOKE_AREA', 'INVOKE_SCREEN', 'EXEC_DEFAULT',"
+                                 " 'EXEC_REGION_WIN', 'EXEC_REGION_CHANNELS', 'EXEC_REGION_PREVIEW', 'EXEC_AREA',"
+                                 " 'EXEC_SCREEN']")
+    fw(docstring +
+       "import bpy\n"
+       "from typing import Literal, Union, TypedDict, Any\n"
+       f"_ExecutionContext = {execution_context_literal}\n\n")
 
     operators.sort(key=lambda op: op.func_name)
 
@@ -2731,7 +2811,12 @@ _RNA_OPS = None
 _RNA_PROPS = None
 
 
-def get_rna_info():
+def get_rna_info() -> tuple[
+    dict[tuple[str, str], rna_info.InfoStructRNA],
+    dict[tuple[str, str], rna_info.InfoFunctionRNA],
+    dict[tuple[str, str], rna_info.InfoOperatorRNA],
+    dict[tuple[str, str], rna_info.InfoPropertyRNA]
+]:
     global _RNA_STRUCTS, _RNA_FUNCS, _RNA_OPS, _RNA_PROPS
     if _RNA_STRUCTS is None or _RNA_FUNCS is None or _RNA_OPS is None or _RNA_PROPS is None:
         # Note that by default, rna_info filters out some classes, such as most Operators, this can be changed by
