@@ -2921,10 +2921,8 @@ def bpy2predef(BASEPATH, title, write_ops, write_types):
         bpy_prop_collection_idprop_name = TYPE_ABERRATIONS.get("bpy_prop_collection_idprop", "bpy_prop_collection_idprop")
         fake_generic_classes = (
             f"""
-# Prop collection keys can be either int or str
-_prop_collection_key = Union[int, str]
-_T = TypeVar('_T')
-_R = TypeVar('_R', bounds='type')
+_R = TypeVar('_R')
+
 
 class _generic_prop(Generic[_R], bpy_prop):
     \"\"\"Fake generic version of bpy_prop added by pypredef_gen\"\"\"
@@ -2932,30 +2930,53 @@ class _generic_prop(Generic[_R], bpy_prop):
     data: bpy.types.bpy_struct
     id_data: Optional[bpy.types.ID]
 
-class _generic_prop_collection(Generic[_T], bpy_prop_collection):
+
+# Prop collection keys can be either int or str
+_prop_collection_key = Union[int, str]
+_B = TypeVar('_B', bound=bpy.types.bpy_struct)
+
+
+class _generic_prop_collection(bpy_prop_collection, Generic[_B]):
     \"\"\"Fake generic version of bpy_prop_collection added by pypredef_gen\"\"\"
-    def __getitem__(self, key: _prop_collection_key) -> _T: ...
-    def __getitem__(self, s: slice) -> Sequence[_T]: ...
-    def __iter__(self) -> Iterator[_T]: ...
+    # Note that PyCharm is bugged with implicit slices and assumes the return type is always Self in such cases
+    # Implicit gives wrong type:
+    #   my_collection[3:] -> type(my_collection)
+    # Explicit gives correct type (as per any type hints):
+    #   my_collection[slice(3, None)] -> Sequence
+    # Additionally, attempting to @overload __getitem__ to include type hints for slices seems to stop the type checker
+    # from working when getting an item by key
+    def __getitem__(self, key: _prop_collection_key) -> _B: ...
+    def __iter__(self) -> Iterator[_B]: ...
     def find(self, key: str) -> int: ...
-    def get(self, key: Union[str, tuple[str, Optional[str]]], default=None) -> _T: ...
-    def items(self) -> list[tuple[_prop_collection_key, _T]]: ...
+    def get(self, key: Union[str, tuple[str, Optional[str]]], default=None) -> _B: ...
+    def items(self) -> list[tuple[_prop_collection_key, _B]]: ...
     def keys(self) -> list[str]: ...
-    def values(self) -> list[_T]: ...
+    def values(self) -> list[_B]: ...
+
+
+_T = TypeVar('_T')
+
 
 class _generic_prop_array(Generic[_T], bpy_prop_array):
     \"\"\"Fake generic version of bpy_prop_array added by pypredef_gen\"\"\"
-    @overload
+    # Note that PyCharm is bugged with implicit slices and assumes the return type is always Self in such cases
+    # Implicit gives wrong type:
+    #   my_array[3:] -> type(my_collection)
+    # Explicit gives correct type (as per any type hints):
+    #   my_array[slice(3, None)] -> Sequence
+    # Additionally, attempting to @overload __getitem__ to include type hints for slices seems to stop the type checker
+    # from working when getting an item by key
     def __getitem__(self, key: int) -> _T: ...
-    @overload
-    def __getitem__(self, s: slice) -> Sequence[_T]: ...
-    @overload
-    def __getitem__(self, key) -> _T: ...
     def __iter__(self) -> Iterator[_T]: ...
 
-class _generic_prop_collection_idprop(_generic_prop_collection[_T], {bpy_prop_collection_idprop_name}):
+
+_PG = TypeVar('_PG', bound=bpy.types.PropertyGroup)
+
+
+# noinspection PyMethodOverriding
+class _generic_prop_collection_idprop(_generic_prop_collection[_PG], {bpy_prop_collection_idprop_name}):
     \"\"\"Fake generic version of bpy_prop_collection_idprop (not available from within Blender) added by pypredef_gen\"\"\"
-    def add(self) -> _T: ...
+    def add(self) -> _PG: ...
     def remove(self, key: int, /): ...
     def move(self, key: int, pos: int, /): ...
     def clear(self): ...
