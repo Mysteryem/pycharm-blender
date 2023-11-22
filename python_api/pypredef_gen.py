@@ -1232,12 +1232,21 @@ def rna2list(info, extra_property_types=()) -> DefinitionParts:
         # Add Operator specific, positional-only parameters
         # Default arguments are found in <blender install dir>\<blender version>\scripts\modules\bpy\ops.py in
         # _BPyOpsSubModOp._parse_args as the C_dict, C_exec and C_undo variables
-        operator_args = (f"override_context: dict[str, Any] = None,"
-                         # _ExecutionContext is defined at the top of each Operator module to reduce the number of times
-                         # it is repeated
-                         f" execution_context: _ExecutionContext = 'EXEC_DEFAULT',"
-                         # Technically any int is allowed, but bool makes more sense
-                         f" undo: bool = False, /")
+        if bpy.app.version >= (4, 0):
+            # 4.0 removed the override_context positional argument, replaced with using Context.temp_override().
+            operator_args = (
+                             # _ExecutionContext is defined at the top of each Operator module to reduce the number of
+                             # times it is repeated
+                             f"execution_context: _ExecutionContext = 'EXEC_DEFAULT',"
+                             # Technically any int is allowed, but bool makes more sense
+                             f" undo: bool = False, /")
+        else:
+            operator_args = (f"override_context: dict[str, Any] = None,"
+                             # _ExecutionContext is defined at the top of each Operator module to reduce the number of times
+                             # it is repeated
+                             f" execution_context: _ExecutionContext = 'EXEC_DEFAULT',"
+                             # Technically any int is allowed, but bool makes more sense
+                             f" undo: bool = False, /")
         # Finalise the prototype string
         if args_str:
             prototype_args = f"{operator_args}, *, " + args_str
