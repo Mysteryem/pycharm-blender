@@ -2649,10 +2649,13 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
         for prop in rna_properties:
             rna_property2predef(ident,fw,prop)
 
-    #Python properties
-    py_properties = descr.get_py_properties()
-    for identifier, prop in py_properties:
-        pyprop2predef(ident,fw,identifier,prop)
+    # Python properties
+    # Normally we get these through class inheritance, so we can skip them unless we're a fake module.
+    py_properties = []
+    if is_fake_module:
+        for identifier, prop in descr.get_py_properties():
+            py_properties.append(identifier)
+            pyprop2predef(ident,fw,identifier,prop)
 
     #Blender native functions
     rna_functions = descr.functions
@@ -2664,6 +2667,8 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
     # see if we need to include the function or not
     owning_class = None if is_fake_module else descr.py_class
     for identifier, function in py_functions:
+        # FIXME: This check only works for direct subclasses of a bpy_types metaclass. A subclass of a subclass will
+        #  result in `is_external_py_metaclass` being False.
         # If the class is a metaclass, exists in a python file and the function does too, skip it as the class in
         # bpy.types will be faked and inherit from the metaclass
         if is_external_py_metaclass and hasattr(function, '__code__'):
@@ -2674,7 +2679,7 @@ def rna_struct2predef(ident, fw, descr: rna_info.InfoStructRNA, is_fake_module=F
         all_attributes = set()
         all_attributes.update(prop.identifier for prop in rna_properties)
         all_attributes.update(func.identifier for func in rna_functions)
-        all_attributes.update(prop[0] for prop in py_properties)
+        all_attributes.update(py_properties)
         all_attributes.update(func[0] for func in py_functions)
         return all_attributes
 
