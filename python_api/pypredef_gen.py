@@ -2044,13 +2044,13 @@ def pymodule2predef(BASEPATH, module_name, module, title, visited, parent_name=N
     # need it to set up our fake/stubbed modules
     # Similarly, bl_ui and bl_operators we need to replace to allow for setting up their submodules in a
     # non-programmatic manner so that PyCharm can find them
-    if hasattr(module, '__file__') and true_module_name not in {'bpy', 'bl_ui', 'bl_operators'}:
+    if (module_file := getattr(module, "__file__", None)) and true_module_name not in {'bpy', 'bl_ui', 'bl_operators'}:
         if _ARG_SKIP_FILES:
             print(f"- {true_module_name} already exists as a file. Skipping it.")
         else:
             print(f"- {true_module_name} already exists as a file. Copying the file")
             # The module already exists as a file, copy it
-            shutil.copy(module.__file__, filepath)
+            shutil.copy(module_file, filepath)
         return
 
     attribute_set = set()
